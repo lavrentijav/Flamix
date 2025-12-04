@@ -1,0 +1,79 @@
+{
+  "id": "com.example.minimal_iptables",
+  "name": "Minimal Iptables Plugin",
+  "version": "0.1.0",
+  "author": "Flamix Team",
+  "platforms": ["linux"],
+  "entry_point": "plugin.py",
+  "capabilities": ["manage_rules"],
+  "permissions": ["run_shell_commands:iptables"],
+  "dependencies": {},
+  "signature": "",
+  "checksum": "",
+  "api_version": "1.0",
+  "rule_schema": {
+    "fields": [
+      {
+        "name": "port",
+        "type": "number",
+        "label": "Port",
+        "required": true,
+        "min": 1,
+        "max": 65535
+      },
+      {
+        "name": "protocol",
+        "type": "select",
+        "label": "Protocol",
+        "required": true,
+        "options": [
+          {"value": "tcp", "label": "TCP"},
+          {"value": "udp", "label": "UDP"}
+        ],
+        "default": "tcp"
+      },
+      {
+        "name": "action",
+        "type": "radio",
+        "label": "Action",
+        "required": true,
+        "options": [
+          {"value": "accept", "label": "Accept"},
+          {"value": "drop", "label": "Drop"},
+          {"value": "reject", "label": "Reject"}
+        ],
+        "default": "accept"
+      },
+      {
+        "name": "chain",
+        "type": "select",
+        "label": "Chain",
+        "required": true,
+        "options": [
+          {"value": "INPUT", "label": "INPUT"},
+          {"value": "OUTPUT", "label": "OUTPUT"},
+          {"value": "FORWARD", "label": "FORWARD"}
+        ],
+        "default": "INPUT"
+      }
+    ]
+  },
+  "firewall_support": [
+    {
+      "name": "iptables",
+      "versions": {
+        "min": "1.4.0",
+        "max": null,
+        "exact": []
+      },
+      "detect": {
+        "type": "command",
+        "value": "iptables --version"
+      },
+      "regex": ["iptables v(\\d+\\.\\d+\\.\\d+)", "iptables v(\\d+\\.\\d+)"],
+      "requires_root": true,
+      "priority": 100
+    }
+  ]
+}
+
