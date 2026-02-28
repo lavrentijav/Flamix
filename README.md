@@ -1,235 +1,157 @@
-# Flamix
+# Flamix GUI Application
 
-Flamix - расширяемый менеджер firewall с плагинной архитектурой для централизованного управления любыми установленными firewall.
-
-## Архитектура
-
-Flamix построен на модульной архитектуре с системой плагинов:
-
-- **Ядро (Core)**: Управление плагинами, безопасность, IPC
-- **Плагины**: ZIP-архивы с манифестом и кодом для поддержки различных firewall
-- **GUI**: Графический интерфейс на PySide6
-- **CLI**: Командная строка для управления
-- **Агент**: Демон для выполнения операций с правами root
+GUI приложение на DearPyGui для управления Flamix Server через веб-API.
 
 ## Установка
 
 ### Требования
 
-- Python 3.8-3.11
-- Linux/macOS/Windows
+- Python 3.8+
+- Windows/Linux/macOS
+- Запущенный Flamix Server с веб-интерфейсом
 
-### Установка из исходников
-
-```bash
-pip install -r requirements.txt
-pip install -e .
-```
-
-## Быстрый старт
-
-### Установка (опционально)
-
-Для установки пакета в систему:
+### Установка зависимостей
 
 ```bash
 pip install -r requirements.txt
-pip install -e .
 ```
 
-После установки можно использовать команды `flamix-agent`, `flamix-cli`, `flamix-gui`.
+## Запуск
 
-### Запуск без установки
-
-Можно запускать напрямую из исходников без установки:
-
-**Linux/macOS:**
-```bash
-# Сделать скрипты исполняемыми (один раз)
-chmod +x run.sh run_agent.py run_cli.py run_gui.py
-
-# Запуск агента
-sudo ./run.sh agent
-# или
-sudo python3 run_agent.py
-
-# Запуск GUI
-./run.sh gui
-# или
-python3 run_gui.py
-
-# Запуск CLI
-./run.sh cli list-plugins
-# или
-python3 run_cli.py list-plugins
-```
-
-**Windows:**
-```cmd
-REM Запуск агента (от имени администратора)
-run.bat agent
-REM или
-python run_agent.py
-
-REM Запуск GUI
-run.bat gui
-REM или
-python run_gui.py
-
-REM Запуск CLI
-run.bat cli list-plugins
-REM или
-python run_cli.py list-plugins
-```
-
-### Использование CLI
+### Базовый запуск
 
 ```bash
-# Список плагинов
-python3 run_cli.py list-plugins
-# или после установки: flamix-cli list-plugins
-
-# Установка плагина
-python3 run_cli.py install-plugin ./plugin.zip
-
-# Включение плагина
-python3 run_cli.py enable-plugin com.example.plugin
-
-# Отключение плагина
-python3 run_cli.py disable-plugin com.example.plugin
+python run.py
 ```
 
-## Создание плагина
-
-### Структура плагина
-
-Плагин - это ZIP-архив со следующей структурой:
-
-```
-my_plugin/
-├── manifest.json      # Обязательный манифест
-├── plugin.py          # Точка входа (указана в manifest)
-├── scripts/           # Опционально: скрипты для детекта
-└── resources/         # Опционально: статические файлы
-```
-
-### Пример manifest.json
-
-```json
-{
-  "id": "com.example.iptables",
-  "name": "Iptables Plugin",
-  "version": "1.0.0",
-  "author": "Your Name",
-  "platforms": ["linux"],
-  "entry_point": "plugin.py",
-  "capabilities": ["manage_rules"],
-  "permissions": ["run_shell_commands:iptables"],
-  "dependencies": {},
-  "signature": "",
-  "checksum": "",
-  "api_version": "1.0",
-  "firewall_support": [
-    {
-      "name": "iptables",
-      "versions": {"min": "1.4.0", "max": null, "exact": []},
-      "detect": {"type": "command", "value": "iptables --version"},
-      "regex": ["iptables v(\\d+\\.\\d+\\.\\d+)"],
-      "requires_root": true,
-      "priority": 100
-    }
-  ]
-}
-```
-
-### Пример plugin.py
-
-```python
-from flamix.api import PluginInterface
-
-class MyPlugin(PluginInterface):
-    async def on_install(self):
-        pass
-
-    async def on_enable(self):
-        pass
-
-    async def on_init(self, core_api):
-        self.core_api = core_api
-        firewalls = await core_api.detect_firewalls()
-        # Инициализация...
-
-    async def on_disable(self):
-        pass
-
-    async def on_uninstall(self):
-        pass
-
-    async def get_health(self):
-        return {"status": "ok"}
-
-    async def apply_rule(self, rule: dict):
-        # Применение правила через core_api.run_command_safely()
-        pass
-```
-
-### Создание ZIP плагина
+### С указанием URL сервера
 
 ```bash
-cd examples/iptables_plugin
-zip -r ../../iptables_plugin.zip .
+python run.py --server-url http://127.0.0.1:8080
 ```
 
-## Безопасность
+### С HTTPS
 
-Flamix реализует модель безопасности с минимальными привилегиями:
+```bash
+python run.py --server-url https://127.0.0.1:8080
+```
 
-- **Sandboxing**: Изоляция плагинов (планируется для Этапа 2)
-- **Permissions**: Строгий белый список операций
-- **Валидация команд**: Проверка аргументов команд по белому списку
-- **Подпись плагинов**: RSA подпись манифестов (планируется)
+### Параметры запуска
+
+- `--server-url` - URL сервера (по умолчанию: https://127.0.0.1:8080)
+
+## Возможности
+
+### Управление клиентами
+
+- Просмотр списка всех подключенных клиентов
+- Просмотр детальной информации о клиенте
+- Статус подключения и последняя активность
+- Создание новых клиентов
+
+### Управление правилами
+
+- Просмотр правил для каждого клиента
+- Создание новых правил
+- Редактирование существующих правил
+- Удаление правил
+- Включение/отключение правил
+
+### Аналитика
+
+- Просмотр статистики блокировок
+- Фильтрация по клиентам
+- Статистика по протоколам и портам
+- Временные графики
+
+### Запросы на изменение
+
+- Просмотр запросов на изменение правил от клиентов
+- Одобрение запросов
+- Отклонение запросов с указанием причины
+- Фильтрация по статусу (pending, approved, rejected)
+
+### Автоматическое обновление
+
+Данные автоматически обновляются каждые 30 секунд. Также можно обновить вручную кнопкой "Refresh".
 
 ## Структура проекта
 
 ```
-flamix/
-├── api/              # API для плагинов
-├── agent/            # Демон агента
-├── cli/              # CLI инструмент
-├── config.py         # Конфигурация
-├── database/         # База данных правил
-├── gui/              # GUI на PySide6
-├── ipc/              # IPC механизм (JSON-RPC)
-├── models/           # Модели данных
-├── plugins/          # Загрузчик и менеджер плагинов
-└── security/         # Менеджер разрешений
-
-examples/
-└── iptables_plugin/  # Пример плагина
+app/
+├── gui.py              # GUI приложение на dearpygui
+├── api_client.py       # Клиент для работы с веб-API
+├── run.py              # Точка входа
+├── requirements.txt    # Зависимости
+└── README.md          # Этот файл
 ```
+
+## Подключение к серверу
+
+1. Убедитесь, что Flamix Server запущен
+2. Проверьте, что веб-интерфейс доступен (по умолчанию `http://127.0.0.1:8080`)
+3. Запустите GUI приложение
+4. Введите URL сервера в поле "Server URL" и нажмите "Connect"
+
+## Интерфейс
+
+### Вкладка Clients
+
+- Список клиентов слева
+- Детальная информация о выбранном клиенте справа
+- Кнопка "Refresh" для обновления списка
+
+### Вкладка Rules
+
+- Выбор клиента в левой панели
+- Таблица правил справа
+- Кнопки "Add Rule", "Edit", "Delete", "Enable/Disable"
+
+### Вкладка Analytics
+
+- Фильтры в левой панели
+- Таблица аналитики справа
+- Кнопка "Refresh" для обновления данных
+
+### Вкладка Change Requests
+
+- Фильтры по статусу в левой панели
+- Таблица запросов справа
+- Кнопки "Approve" и "Reject" для каждого запроса
 
 ## Разработка
 
-### Запуск тестов
+### Запуск в режиме разработки
 
 ```bash
-pytest
+python run.py --server-url http://127.0.0.1:8080
 ```
 
-### Линтинг
+### Отладка
 
-```bash
-pylint flamix/
-black flamix/
-bandit -r flamix/
+Для отладки можно включить подробное логирование:
+
+```python
+import logging
+logging.basicConfig(level=logging.DEBUG)
 ```
 
-## Лицензия
+## Устранение неполадок
 
-MIT License
+### Ошибка подключения
 
-## Roadmap
+1. Проверьте, что сервер запущен
+2. Проверьте правильность URL сервера
+3. Убедитесь, что веб-интерфейс сервера включен
+4. Проверьте, что нет проблем с сетью или файрволом
 
-- **Этап 1 (MVP)**: ✅ Базовая архитектура, плагины, GUI
-- **Этап 2**: Sandboxing, подпись плагинов, поддержка nftables/Windows Firewall
-- **Этап 3**: Plugin marketplace, интеграция с SIEM
+### Ошибка отображения данных
+
+1. Проверьте, что сервер доступен и отвечает
+2. Обновите данные кнопкой "Refresh"
+3. Проверьте логи на наличие ошибок
+
+## Поддержка
+
+Документация: см. `docs/` в корне проекта
+Вики: см. ветку `master` в репозитории
