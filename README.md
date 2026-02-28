@@ -1,212 +1,142 @@
-# Flamix
+# Flamix Client
 
-Flamix - расширяемый менеджер firewall с плагинной архитектурой для централизованного управления любыми установленными firewall.
-
-## Архитектура
-
-Flamix построен на модульной архитектуре с системой плагинов:
-
-- **Ядро (Core)**: Управление плагинами, безопасность, IPC
-- **Плагины**: ZIP-архивы с манифестом и кодом для поддержки различных firewall
-- **GUI**: Графический интерфейс на PySide6
-- **CLI**: Командная строка для управления
-- **Агент**: Демон для выполнения операций с правами root
+Клиентская часть системы управления файрволом Flamix. Подключается к серверу и синхронизирует правила файрвола.
 
 ## Установка
 
 ### Требования
 
-- Python 3.8-3.11
-- Linux/macOS/Windows
+- Python 3.8+
+- Windows/Linux/macOS
+- Права администратора (для применения правил файрвола)
 
-### Установка из исходников
-
-```bash
-pip install -r requirements.txt
-pip install -e .
-```
-
-## Быстрый старт
-
-### Установка (опционально)
-
-Для установки пакета в систему:
+### Установка зависимостей
 
 ```bash
 pip install -r requirements.txt
-pip install -e .
 ```
 
-После установки можно использовать команды `flamix-agent`, `flamix-cli`, `flamix-gui`.
+## Подключение к серверу
 
-### Запуск без установки
+### 1. Получение сертификата
 
-Можно запускать напрямую из исходников без установки:
+Перед первым запуском необходимо получить клиентский сертификат от сервера:
 
-**Linux/macOS:**
-```bash
-# Сделать скрипты исполняемыми (один раз)
-chmod +x run.sh run_agent.py run_cli.py run_gui.py
+1. На сервере создайте клиента через веб-интерфейс или API
+2. Скачайте сертификат клиента (`client.crt` и `client.key`)
+3. Поместите сертификаты в директорию `certs/` на клиентской машине
 
-# Запуск агента
-sudo ./run.sh agent
-# или
-sudo python3 run_agent.py
-
-# Запуск GUI
-./run.sh gui
-# или
-python3 run_gui.py
-
-# Запуск CLI
-./run.sh cli list-plugins
-# или
-python3 run_cli.py list-plugins
-```
-
-**Windows:**
-```cmd
-REM Запуск агента (от имени администратора)
-run.bat agent
-REM или
-python run_agent.py
-
-REM Запуск GUI
-run.bat gui
-REM или
-python run_gui.py
-
-REM Запуск CLI
-run.bat cli list-plugins
-REM или
-python run_cli.py list-plugins
-```
-
-### Использование CLI
+### 2. Запуск клиента
 
 ```bash
-# Список плагинов
-python3 run_cli.py list-plugins
-# или после установки: flamix-cli list-plugins
-
-# Установка плагина
-python3 run_cli.py install-plugin ./plugin.zip
-
-# Включение плагина
-python3 run_cli.py enable-plugin com.example.plugin
-
-# Отключение плагина
-python3 run_cli.py disable-plugin com.example.plugin
+python run.py --client-id my-client --server-host localhost --server-port 8443
 ```
 
-## Создание плагина
+### Параметры запуска
 
-### Структура плагина
+- `--client-id` - **Обязательный**. Уникальный идентификатор клиента
+- `--server-host` - Хост сервера (по умолчанию: localhost)
+- `--server-port` - Порт сервера (по умолчанию: 8443)
+- `--cert-dir` - Директория с сертификатами (по умолчанию: certs)
+- `--sync-interval` - Интервал синхронизации правил в секундах (по умолчанию: 30)
+- `--monitor-interval` - Интервал проверки изменений правил в секундах (по умолчанию: 10)
+- `--analytics-enabled` - Включить сбор аналитики
+- `--analytics-interval` - Интервал отправки аналитики в секундах (по умолчанию: 60)
 
-Плагин - это ZIP-архив со следующей структурой:
+## Примеры использования
 
-```
-my_plugin/
-├── manifest.json      # Обязательный манифест
-├── plugin.py          # Точка входа (указана в manifest)
-├── scripts/           # Опционально: скрипты для детекта
-└── resources/         # Опционально: статические файлы
-```
-
-### Пример manifest.json
-
-```json
-{
-  "id": "com.example.iptables",
-  "name": "Iptables Plugin",
-  "version": "1.0.0",
-  "author": "Your Name",
-  "platforms": ["linux"],
-  "entry_point": "plugin.py",
-  "capabilities": ["manage_rules"],
-  "permissions": ["run_shell_commands:iptables"],
-  "dependencies": {},
-  "signature": "",
-  "checksum": "",
-  "api_version": "1.0",
-  "firewall_support": [
-    {
-      "name": "iptables",
-      "versions": {"min": "1.4.0", "max": null, "exact": []},
-      "detect": {"type": "command", "value": "iptables --version"},
-      "regex": ["iptables v(\\d+\\.\\d+\\.\\d+)"],
-      "requires_root": true,
-      "priority": 100
-    }
-  ]
-}
-```
-
-### Пример plugin.py
-
-```python
-from flamix.api import PluginInterface
-
-class MyPlugin(PluginInterface):
-    async def on_install(self):
-        pass
-
-    async def on_enable(self):
-        pass
-
-    async def on_init(self, core_api):
-        self.core_api = core_api
-        firewalls = await core_api.detect_firewalls()
-        # Инициализация...
-
-    async def on_disable(self):
-        pass
-
-    async def on_uninstall(self):
-        pass
-
-    async def get_health(self):
-        return {"status": "ok"}
-
-    async def apply_rule(self, rule: dict):
-        # Применение правила через core_api.run_command_safely()
-        pass
-```
-
-### Создание ZIP плагина
+### Базовый запуск
 
 ```bash
-cd examples/iptables_plugin
-zip -r ../../iptables_plugin.zip .
+python run.py --client-id workstation-01
 ```
 
-## Безопасность
+### С указанием сервера
 
-Flamix реализует модель безопасности с минимальными привилегиями:
+```bash
+python run.py --client-id workstation-01 --server-host 192.168.1.100 --server-port 8443
+```
 
-- **Sandboxing**: Изоляция плагинов (планируется для Этапа 2)
-- **Permissions**: Строгий белый список операций
-- **Валидация команд**: Проверка аргументов команд по белому списку
-- **Подпись плагинов**: RSA подпись манифестов (планируется)
+### С аналитикой
+
+```bash
+python run.py --client-id workstation-01 --analytics-enabled --analytics-interval 30
+```
+
+### С настройкой интервалов
+
+```bash
+python run.py --client-id workstation-01 \
+  --sync-interval 60 \
+  --monitor-interval 5
+```
 
 ## Структура проекта
 
 ```
-flamix/
-├── api/              # API для плагинов
-├── agent/            # Демон агента
-├── cli/              # CLI инструмент
-├── config.py         # Конфигурация
-├── database/         # База данных правил
-├── gui/              # GUI на PySide6
-├── ipc/              # IPC механизм (JSON-RPC)
-├── models/           # Модели данных
-├── plugins/          # Загрузчик и менеджер плагинов
-└── security/         # Менеджер разрешений
-
-examples/
-└── iptables_plugin/  # Пример плагина
+client/
+├── flamix/
+│   ├── client/          # Клиентские модули
+│   │   ├── client.py   # Главный клиент
+│   │   ├── protocol.py  # Протокол связи
+│   │   ├── rule_sync.py # Синхронизация правил
+│   │   ├── rule_converter.py  # Конвертация правил
+│   │   ├── rule_monitor.py    # Мониторинг изменений
+│   │   ├── analytics_collector.py  # Сбор аналитики
+│   │   └── security.py # Безопасность и сертификаты
+│   └── common/          # Общие модули
+│       ├── protocol_types.py
+│       ├── rule_format.py
+│       ├── crypto.py
+│       └── diffie_hellman.py
+├── run.py               # Точка входа
+├── requirements.txt     # Зависимости
+└── README.md           # Этот файл
 ```
+
+## Функциональность
+
+### Синхронизация правил
+
+Клиент автоматически синхронизирует правила с сервером:
+- При подключении выполняется первоначальная синхронизация
+- Периодическая синхронизация по интервалу `--sync-interval`
+- Правила конвертируются в нативные команды файрвола
+
+### Мониторинг изменений
+
+Клиент отслеживает ручные изменения правил файрвола:
+- Периодическая проверка по интервалу `--monitor-interval`
+- Вычисление checksum текущих правил
+- Отправка запроса на авторизацию при обнаружении изменений
+- Автоматический откат неавторизованных изменений
+
+### Аналитика (опционально)
+
+При включении аналитики клиент собирает статистику:
+- Количество заблокированных соединений
+- Попытки подключения к заблокированным адресам
+- Статистика по протоколам и портам
+
+## Безопасность
+
+- **TLS соединения**: Mutual TLS для связи с сервером
+- **Diffie-Hellman**: Обмен ключами для сессионного шифрования
+- **HMAC**: Проверка целостности сообщений
+- **Nonce и timestamps**: Защита от replay-атак
+
+## Сертификаты
+
+Клиент требует следующие сертификаты в директории `certs/`:
+- `ca.crt` - Сертификат CA (для проверки сервера)
+- `client.crt` - Сертификат клиента
+- `client.key` - Приватный ключ клиента
+
+Если сертификаты отсутствуют, клиент попытается подключиться к серверу для их получения (если сервер поддерживает такую функцию).
+
+## Логирование
+
+Логи выводятся в консоль. Для настройки уровня логирования измените `logging.basicConfig` в `run.py`.
 
 ## Разработка
 
@@ -216,20 +146,30 @@ examples/
 pytest
 ```
 
-### Линтинг
+### Отладка
 
-```bash
-pylint flamix/
-black flamix/
-bandit -r flamix/
+Для отладки можно запустить клиент с более подробным логированием:
+
+```python
+logging.basicConfig(level=logging.DEBUG)
 ```
 
-## Лицензия
+## Устранение неполадок
 
-MIT License
+### Ошибка подключения
 
-## Roadmap
+1. Проверьте, что сервер запущен и доступен
+2. Проверьте правильность `--server-host` и `--server-port`
+3. Убедитесь, что сертификаты находятся в правильной директории
+4. Проверьте, что `--client-id` совпадает с ID на сервере
 
-- **Этап 1 (MVP)**: ✅ Базовая архитектура, плагины, GUI
-- **Этап 2**: Sandboxing, подпись плагинов, поддержка nftables/Windows Firewall
-- **Этап 3**: Plugin marketplace, интеграция с SIEM
+### Ошибка применения правил
+
+1. Убедитесь, что запущено с правами администратора
+2. Проверьте, что установлены необходимые плагины для вашего файрвола
+3. Проверьте логи на наличие ошибок конвертации правил
+
+## Поддержка
+
+Документация: см. `docs/` в корне проекта
+Вики: см. ветку `master` в репозитории
