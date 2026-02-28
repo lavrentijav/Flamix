@@ -37,17 +37,59 @@ ENV/
 /var/lib/flamix/
 /var/log/flamix/
 *.db
+*.db-shm
+*.db-wal
 *.log
+data/
+certs/
+logs/
+temp/
+
+# Scripts and run files (keep structure, ignore runtime files)
+*.bat
+*.sh
+!scripts/*.bat
+!scripts/*.sh
 
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
+.tox/
+.hypothesis/
 
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Plugins
 *.zip
 !examples/*.zip
+
+# IDE and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# Build and distribution
+build/
+dist/
+*.egg-info/
+*.whl
+*.tar.gz
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Archive directory (optional - can be committed for history)
+# archive/
+/archive/
+/plugins/

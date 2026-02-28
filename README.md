@@ -1,235 +1,173 @@
 # Flamix
 
-Flamix - расширяемый менеджер firewall с плагинной архитектурой для централизованного управления любыми установленными firewall.
+Flamix - система централизованного управления файрволом с клиент-серверной архитектурой.
 
-## Архитектура
+## Структура проекта
 
-Flamix построен на модульной архитектуре с системой плагинов:
+Проект разделен на три независимые ветки:
 
-- **Ядро (Core)**: Управление плагинами, безопасность, IPC
-- **Плагины**: ZIP-архивы с манифестом и кодом для поддержки различных firewall
-- **GUI**: Графический интерфейс на PySide6
-- **CLI**: Командная строка для управления
-- **Агент**: Демон для выполнения операций с правами root
+### 📦 [Server](server/) - Серверная часть
 
-## Установка
+Централизованное управление клиентами, правилами и аналитикой.
 
-### Требования
+- Управление множеством клиентов
+- Хранение и синхронизация правил
+- Веб-интерфейс (FastAPI)
+- Аналитика и статистика
+- Авторизация изменений правил
 
-- Python 3.8-3.11
-- Linux/macOS/Windows
+**Документация:** [server/README.md](server/README.md)
 
-### Установка из исходников
+### 💻 [Client](client/) - Клиентская часть
 
-```bash
-pip install -r requirements.txt
-pip install -e .
-```
+Клиент для подключения к серверу и применения правил.
+
+- Подключение к серверу
+- Синхронизация правил
+- Мониторинг изменений
+- Сбор аналитики (опционально)
+
+**Документация:** [client/README.md](client/README.md)
+
+### 🖥️ [App](app/) - GUI приложение
+
+Графический интерфейс для управления сервером.
+
+- Управление клиентами
+- Управление правилами
+- Просмотр аналитики
+- Управление запросами на изменение
+
+**Документация:** [app/README.md](app/README.md)
 
 ## Быстрый старт
 
-### Установка (опционально)
-
-Для установки пакета в систему:
+### 1. Установка сервера
 
 ```bash
+cd server
 pip install -r requirements.txt
-pip install -e .
+python run.py
 ```
 
-После установки можно использовать команды `flamix-agent`, `flamix-cli`, `flamix-gui`.
+Сервер будет доступен на:
+- Клиентские соединения: `0.0.0.0:8443`
+- Веб-интерфейс: `https://127.0.0.1:8080`
 
-### Запуск без установки
-
-Можно запускать напрямую из исходников без установки:
-
-**Linux/macOS:**
-```bash
-# Сделать скрипты исполняемыми (один раз)
-chmod +x run.sh run_agent.py run_cli.py run_gui.py
-
-# Запуск агента
-sudo ./run.sh agent
-# или
-sudo python3 run_agent.py
-
-# Запуск GUI
-./run.sh gui
-# или
-python3 run_gui.py
-
-# Запуск CLI
-./run.sh cli list-plugins
-# или
-python3 run_cli.py list-plugins
-```
-
-**Windows:**
-```cmd
-REM Запуск агента (от имени администратора)
-run.bat agent
-REM или
-python run_agent.py
-
-REM Запуск GUI
-run.bat gui
-REM или
-python run_gui.py
-
-REM Запуск CLI
-run.bat cli list-plugins
-REM или
-python run_cli.py list-plugins
-```
-
-### Использование CLI
+### 2. Подключение клиента
 
 ```bash
-# Список плагинов
-python3 run_cli.py list-plugins
-# или после установки: flamix-cli list-plugins
-
-# Установка плагина
-python3 run_cli.py install-plugin ./plugin.zip
-
-# Включение плагина
-python3 run_cli.py enable-plugin com.example.plugin
-
-# Отключение плагина
-python3 run_cli.py disable-plugin com.example.plugin
+cd client
+pip install -r requirements.txt
+python run.py --client-id my-client
 ```
 
-## Создание плагина
-
-### Структура плагина
-
-Плагин - это ZIP-архив со следующей структурой:
-
-```
-my_plugin/
-├── manifest.json      # Обязательный манифест
-├── plugin.py          # Точка входа (указана в manifest)
-├── scripts/           # Опционально: скрипты для детекта
-└── resources/         # Опционально: статические файлы
-```
-
-### Пример manifest.json
-
-```json
-{
-  "id": "com.example.iptables",
-  "name": "Iptables Plugin",
-  "version": "1.0.0",
-  "author": "Your Name",
-  "platforms": ["linux"],
-  "entry_point": "plugin.py",
-  "capabilities": ["manage_rules"],
-  "permissions": ["run_shell_commands:iptables"],
-  "dependencies": {},
-  "signature": "",
-  "checksum": "",
-  "api_version": "1.0",
-  "firewall_support": [
-    {
-      "name": "iptables",
-      "versions": {"min": "1.4.0", "max": null, "exact": []},
-      "detect": {"type": "command", "value": "iptables --version"},
-      "regex": ["iptables v(\\d+\\.\\d+\\.\\d+)"],
-      "requires_root": true,
-      "priority": 100
-    }
-  ]
-}
-```
-
-### Пример plugin.py
-
-```python
-from flamix.api import PluginInterface
-
-class MyPlugin(PluginInterface):
-    async def on_install(self):
-        pass
-
-    async def on_enable(self):
-        pass
-
-    async def on_init(self, core_api):
-        self.core_api = core_api
-        firewalls = await core_api.detect_firewalls()
-        # Инициализация...
-
-    async def on_disable(self):
-        pass
-
-    async def on_uninstall(self):
-        pass
-
-    async def get_health(self):
-        return {"status": "ok"}
-
-    async def apply_rule(self, rule: dict):
-        # Применение правила через core_api.run_command_safely()
-        pass
-```
-
-### Создание ZIP плагина
+### 3. Запуск GUI приложения
 
 ```bash
-cd examples/iptables_plugin
-zip -r ../../iptables_plugin.zip .
+cd app
+pip install -r requirements.txt
+python run.py
+```
+
+## Архитектура
+
+```
+┌─────────────┐
+│   Server    │  ← Централизованное управление
+│  (FastAPI)  │     - Правила
+└──────┬──────┘     - Клиенты
+       │            - Аналитика
+       │ TLS
+       │
+┌──────┴──────┐
+│   Client   │  ← Применение правил
+│            │     - Синхронизация
+└────────────┘     - Мониторинг
 ```
 
 ## Безопасность
 
-Flamix реализует модель безопасности с минимальными привилегиями:
+- **Шифрование базы данных**: SQLCipher с автоматической ротацией ключей
+- **TLS соединения**: Mutual TLS для клиент-сервер связи
+- **Diffie-Hellman**: Обмен ключами для сессионного шифрования
+- **HMAC**: Проверка целостности сообщений
+- **Nonce и timestamps**: Защита от replay-атак
 
-- **Sandboxing**: Изоляция плагинов (планируется для Этапа 2)
-- **Permissions**: Строгий белый список операций
-- **Валидация команд**: Проверка аргументов команд по белому списку
-- **Подпись плагинов**: RSA подпись манифестов (планируется)
+## Подключение новых клиентов
 
-## Структура проекта
+### Через веб-интерфейс
 
-```
-flamix/
-├── api/              # API для плагинов
-├── agent/            # Демон агента
-├── cli/              # CLI инструмент
-├── config.py         # Конфигурация
-├── database/         # База данных правил
-├── gui/              # GUI на PySide6
-├── ipc/              # IPC механизм (JSON-RPC)
-├── models/           # Модели данных
-├── plugins/          # Загрузчик и менеджер плагинов
-└── security/         # Менеджер разрешений
+1. Запустите сервер
+2. Откройте веб-интерфейс: `https://127.0.0.1:8080`
+3. Перейдите в раздел "Clients" → "Add Client"
+4. Введите Client ID и имя клиента
+5. Скачайте сертификат клиента
+6. Передайте сертификат на клиентскую машину
+7. Запустите клиент с указанным Client ID
 
-examples/
-└── iptables_plugin/  # Пример плагина
-```
-
-## Разработка
-
-### Запуск тестов
+### Через API
 
 ```bash
-pytest
+# Создать клиента
+curl -X POST https://127.0.0.1:8080/api/clients \
+  -H "Content-Type: application/json" \
+  -d '{"client_id": "my-client", "name": "My Client"}'
+
+# Получить сертификат
+curl https://127.0.0.1:8080/api/clients/my-client/certificate
 ```
 
-### Линтинг
+### На клиентской машине
 
-```bash
-pylint flamix/
-black flamix/
-bandit -r flamix/
-```
+1. Поместите сертификаты в директорию `certs/`:
+   - `ca.crt` - Сертификат CA
+   - `client.crt` - Сертификат клиента
+   - `client.key` - Приватный ключ клиента
+
+2. Запустите клиент:
+   ```bash
+   python run.py --client-id my-client --server-host <server-ip>
+   ```
+
+## Ветки репозитория
+
+Проект организован в следующие ветки:
+
+- **`server`** - Серверная часть (директория `server/`)
+- **`client`** - Клиентская часть (директория `client/`)
+- **`app`** - GUI приложение (директория `app/`)
+- **`plugins`** - Плагины для различных файрволов (директория `plugins/`)
+- **`master`** - Документация и вики (директория `docs/`)
+
+Каждая ветка содержит независимый код и может быть развернута отдельно.
+
+**Инструкция по настройке веток:** [docs/BRANCHES_SETUP.md](docs/BRANCHES_SETUP.md)
+
+## Документация
+
+- **Вики:** [docs/WIKI.md](docs/WIKI.md) - Полная документация и руководства
+- **Сервер:** [server/README.md](server/README.md)
+- **Клиент:** [client/README.md](client/README.md)
+- **GUI:** [app/README.md](app/README.md)
+- **Плагины:** [plugins/README.md](plugins/README.md) - Разработка и использование плагинов
+- **Сертификаты:** [docs/CERTIFICATES.md](docs/CERTIFICATES.md)
+- **Разработка:** [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
+- **Плагины (детально):** [docs/PLUGINS.md](docs/PLUGINS.md) - Руководство по разработке плагинов
+- **Настройка веток:** [docs/BRANCHES_SETUP.md](docs/BRANCHES_SETUP.md)
+
+## Требования
+
+- Python 3.8+
+- Windows/Linux/macOS
+- Права администратора (для клиента, для применения правил)
 
 ## Лицензия
 
-MIT License
+См. [LICENSE](LICENSE)
 
-## Roadmap
+## Поддержка
 
-- **Этап 1 (MVP)**: ✅ Базовая архитектура, плагины, GUI
-- **Этап 2**: Sandboxing, подпись плагинов, поддержка nftables/Windows Firewall
-- **Этап 3**: Plugin marketplace, интеграция с SIEM
+- Документация: `docs/`
+- Вики: ветка `master`
+- Issues: GitHub Issues
