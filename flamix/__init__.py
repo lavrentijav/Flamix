@@ -1,6 +1,1 @@
-"""
-Flamix - Расширяемый менеджер firewall с плагинной архитектурой
-"""
-
-__version__ = "0.1.0"
-
+"""Flamix Server Package"""
