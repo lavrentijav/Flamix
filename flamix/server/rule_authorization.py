@@ -1,18 +1,23 @@
-"""Авторизация изменений правил на сервере"""
+"""Rule authorization and review logic for server-side rule changes."""
 
+from __future__ import annotations
+
+import json
 import logging
-from typing import Dict, Any, Optional, Tuple
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
+from typing import Any, Dict, Optional, Tuple
 
-from flamix.database.encrypted_db import EncryptedDB
-from flamix.server.rule_manager import RuleManager
 from flamix.common.rule_format import FirewallRule
+from flamix.database.encrypted_db import EncryptedDB
+from flamix.server.rule_analysis import LIMITATION_NOTE, RuleAnalyzer, RuleChangeReview
+from flamix.server.rule_manager import RuleManager
 
 logger = logging.getLogger(__name__)
 
 
 class AuthorizationPolicy:
-    """Политика авторизации"""
+    """Authorization policy for a client."""
 
     def __init__(
         self,
@@ -20,18 +25,8 @@ class AuthorizationPolicy:
         require_approval: bool = True,
         auto_approve_whitelist: list = None,
         max_changes_per_hour: int = 10,
-        validation_rules: list = None
+        validation_rules: list = None,
     ):
-        """
-        Инициализация политики
-
-        Args:
-            allow_manual_changes: Разрешены ли ручные изменения
-            require_approval: Требуется ли одобрение
-            auto_approve_whitelist: Список правил для автоматического одобрения
-            max_changes_per_hour: Максимум изменений в час
-            validation_rules: Правила валидации
-        """
         self.allow_manual_changes = allow_manual_changes
         self.require_approval = require_approval
         self.auto_approve_whitelist = auto_approve_whitelist or []
@@ -40,44 +35,91 @@ class AuthorizationPolicy:
 
 
 class RuleAuthorization:
-    """Система авторизации изменений правил"""
+    """Server-side authorization for firewall rule changes."""
 
     def __init__(self, db: EncryptedDB, rule_manager: RuleManager):
-        """
-        Инициализация системы авторизации
-
-        Args:
-            db: База данных
-            rule_manager: Менеджер правил
-        """
         self.db = db
         self.rule_manager = rule_manager
-        self.policies: Dict[str, AuthorizationPolicy] = {}  # client_id -> policy
+        self.analyzer = RuleAnalyzer()
+        self.policies: Dict[str, AuthorizationPolicy] = {}
 
     def set_policy(self, client_id: str, policy: AuthorizationPolicy):
-        """
-        Установка политики для клиента
-
-        Args:
-            client_id: ID клиента
-            policy: Политика авторизации
-        """
         self.policies[client_id] = policy
 
     def get_policy(self, client_id: str) -> AuthorizationPolicy:
-        """
-        Получение политики для клиента
+        return self.policies.get(client_id, AuthorizationPolicy())
 
-        Args:
-            client_id: ID клиента
-
-        Returns:
-            Политика авторизации (по умолчанию строгая)
+    def review_rule_change(
+        self,
+        client_id: str,
+        rule_id: str,
+        old_rule: Optional[FirewallRule],
+        new_rule: FirewallRule,
+        change_source: str = "manual",
+        require_approval: bool = True,
+    ) -> RuleChangeReview:
         """
-        return self.policies.get(
-            client_id,
-            AuthorizationPolicy()  # Строгая политика по умолчанию
+        Review a rule change without mutating firewall state.
+
+        The review can either approve immediately, queue the request for approval,
+        or reject it with a detailed reason.
+        """
+
+        policy = self.get_policy(client_id)
+        limitations = [LIMITATION_NOTE]
+
+        if change_source == "manual" and not policy.allow_manual_changes:
+            return RuleChangeReview(
+                allowed=False,
+                status="rejected",
+                reason="Manual changes are not allowed for this client",
+                limitations=limitations,
+                snapshot=self._build_snapshot(client_id, rule_id, old_rule, new_rule, change_source),
+            )
+
+        if not self._check_change_limit(client_id):
+            return RuleChangeReview(
+                allowed=False,
+                status="rejected",
+                reason=f"Change limit exceeded (max {policy.max_changes_per_hour} per hour)",
+                limitations=limitations,
+                snapshot=self._build_snapshot(client_id, rule_id, old_rule, new_rule, change_source),
+            )
+
+        validation_result = self._validate_rule(new_rule, policy)
+        if not validation_result[0]:
+            return RuleChangeReview(
+                allowed=False,
+                status="rejected",
+                reason=validation_result[1],
+                limitations=limitations,
+                snapshot=self._build_snapshot(client_id, rule_id, old_rule, new_rule, change_source),
+            )
+
+        existing_rules = self.rule_manager.get_all_rules(client_id)
+        review = self.analyzer.analyze(
+            existing_rules=existing_rules,
+            candidate_rule=new_rule,
+            candidate_rule_id=rule_id,
         )
+        review.limitations = list(dict.fromkeys(review.limitations + limitations))
+        review.snapshot = self._build_snapshot(client_id, rule_id, old_rule, new_rule, change_source)
+
+        if not review.allowed:
+            return review
+
+        if rule_id in policy.auto_approve_whitelist or not policy.require_approval or not require_approval:
+            review.status = "approved"
+            review.reason = None
+            return review
+
+        request_id = self._save_change_request(client_id, rule_id, old_rule, new_rule, change_source)
+        review.allowed = False
+        review.status = "pending"
+        review.reason = "Approval required (pending)"
+        review.request_id = request_id
+        review.snapshot["request_id"] = request_id
+        return review
 
     async def authorize_rule_change(
         self,
@@ -85,66 +127,13 @@ class RuleAuthorization:
         rule_id: str,
         old_rule: Optional[FirewallRule],
         new_rule: FirewallRule,
-        change_source: str = "manual"
+        change_source: str = "manual",
     ) -> Tuple[bool, Optional[str]]:
-        """
-        Авторизация изменения правила
-
-        Args:
-            client_id: ID клиента
-            rule_id: ID правила
-            old_rule: Старое правило
-            new_rule: Новое правило
-            change_source: Источник изменения
-
-        Returns:
-            Кортеж (одобрено, причина отклонения)
-        """
-        policy = self.get_policy(client_id)
-
-        # Проверка разрешения ручных изменений
-        if change_source == "manual" and not policy.allow_manual_changes:
-            return False, "Manual changes are not allowed for this client"
-
-        # Проверка лимита изменений
-        if not self._check_change_limit(client_id):
-            return False, f"Change limit exceeded (max {policy.max_changes_per_hour} per hour)"
-
-        # Валидация правила
-        validation_result = self._validate_rule(new_rule, policy)
-        if not validation_result[0]:
-            return False, validation_result[1]
-
-        # Проверка конфликтов
-        conflict_result = self._check_conflicts(client_id, new_rule)
-        if conflict_result[0]:
-            return False, f"Rule conflicts with existing rules: {conflict_result[1]}"
-
-        # Проверка на автоматическое одобрение
-        if rule_id in policy.auto_approve_whitelist:
-            return True, None
-
-        # Если требуется одобрение, сохраняем запрос
-        if policy.require_approval:
-            self._save_change_request(client_id, rule_id, old_rule, new_rule, change_source)
-            return False, "Approval required (pending)"
-
-        # Автоматическое одобрение
-        return True, None
+        review = self.review_rule_change(client_id, rule_id, old_rule, new_rule, change_source)
+        return review.allowed, review.reason
 
     def _check_change_limit(self, client_id: str) -> bool:
-        """
-        Проверка лимита изменений
-
-        Args:
-            client_id: ID клиента
-
-        Returns:
-            True если лимит не превышен
-        """
         policy = self.get_policy(client_id)
-        from datetime import timedelta
-
         cutoff_time = (datetime.utcnow() - timedelta(hours=1)).isoformat() + "Z"
 
         result = self.db.execute_one(
@@ -152,32 +141,20 @@ class RuleAuthorization:
             SELECT COUNT(*) as count FROM rule_change_requests
             WHERE client_id = ? AND requested_at > ? AND status = 'approved'
             """,
-            (client_id, cutoff_time)
+            (client_id, cutoff_time),
         )
 
-        count = result['count'] if result else 0
+        count = result["count"] if result else 0
         return count < policy.max_changes_per_hour
 
     def _validate_rule(self, rule: FirewallRule, policy: AuthorizationPolicy) -> Tuple[bool, Optional[str]]:
-        """
-        Валидация правила
-
-        Args:
-            rule: Правило для валидации
-            policy: Политика
-
-        Returns:
-            Кортеж (валидно, причина отклонения)
-        """
-        # Проверка правил валидации из политики
         for validation_rule in policy.validation_rules:
-            if validation_rule.get('type') == 'block_critical_ips':
-                critical_ips = validation_rule.get('ips', [])
+            if validation_rule.get("type") == "block_critical_ips":
+                critical_ips = validation_rule.get("ips", [])
                 for rule_ip in rule.targets.ips:
-                    if rule_ip in critical_ips and rule.action == 'block':
+                    if rule_ip in critical_ips and rule.action == "block":
                         return False, f"Cannot block critical IP: {rule_ip}"
 
-        # Базовая валидация
         if not rule.name:
             return False, "Rule name is required"
 
@@ -186,61 +163,22 @@ class RuleAuthorization:
 
         return True, None
 
-    def _check_conflicts(self, client_id: str, rule: FirewallRule) -> Tuple[bool, Optional[str]]:
-        """
-        Проверка конфликтов с существующими правилами
-
-        Args:
-            client_id: ID клиента
-            rule: Правило для проверки
-
-        Returns:
-            Кортеж (есть конфликт, описание конфликта)
-        """
-        existing_rules = self.rule_manager.get_all_rules(client_id)
-
-        for existing_rule in existing_rules:
-            if existing_rule.id == rule.id:
-                continue
-
-            # Проверка на противоположные действия для одних и тех же целей
-            if rule.action != existing_rule.action:
-                # Проверяем пересечение целей
-                if self._targets_overlap(rule, existing_rule):
-                    return True, f"Conflicts with rule {existing_rule.id}"
-
-        return False, None
-
-    def _targets_overlap(self, rule1: FirewallRule, rule2: FirewallRule) -> bool:
-        """
-        Проверка пересечения целей правил
-
-        Args:
-            rule1: Первое правило
-            rule2: Второе правило
-
-        Returns:
-            True если есть пересечение
-        """
-        # Проверка IP
-        for ip1 in rule1.targets.ips:
-            for ip2 in rule2.targets.ips:
-                if ip1 == ip2:
-                    return True
-
-        # Проверка доменов
-        for domain1 in rule1.targets.domains:
-            for domain2 in rule2.targets.domains:
-                if domain1 == domain2 or domain1.startswith('*.') and domain2.endswith(domain1[2:]):
-                    return True
-
-        # Проверка портов
-        for port1 in rule1.targets.ports:
-            for port2 in rule2.targets.ports:
-                if port1 == port2 or port1 == 'any' or port2 == 'any':
-                    return True
-
-        return False
+    def _build_snapshot(
+        self,
+        client_id: str,
+        rule_id: str,
+        old_rule: Optional[FirewallRule],
+        new_rule: FirewallRule,
+        change_source: str,
+    ) -> Dict[str, Any]:
+        return {
+            "client_id": client_id,
+            "rule_id": rule_id,
+            "change_source": change_source,
+            "captured_at": datetime.utcnow().isoformat() + "Z",
+            "old_rule": old_rule.to_dict() if old_rule else None,
+            "new_rule": new_rule.to_dict(),
+        }
 
     def _save_change_request(
         self,
@@ -248,14 +186,11 @@ class RuleAuthorization:
         rule_id: str,
         old_rule: Optional[FirewallRule],
         new_rule: FirewallRule,
-        change_source: str
-    ):
-        """Сохранение запроса на изменение"""
-        import json
-        import uuid
-
+        change_source: str,
+    ) -> str:
         old_rule_data = json.dumps(old_rule.to_dict()) if old_rule else None
         new_rule_data = json.dumps(new_rule.to_dict())
+        request_id = str(uuid.uuid4())
 
         self.db.execute_write(
             """
@@ -264,83 +199,119 @@ class RuleAuthorization:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                str(uuid.uuid4()),
+                request_id,
                 client_id,
                 rule_id,
                 old_rule_data,
                 new_rule_data,
                 change_source,
-                'pending',
-                datetime.utcnow().isoformat() + "Z"
-            )
-        )
-
-    def approve_request(self, request_id: str, reviewer: str) -> bool:
-        """
-        Одобрение запроса на изменение
-
-        Args:
-            request_id: ID запроса
-            reviewer: Имя одобряющего
-
-        Returns:
-            True если успешно
-        """
-        request = self.db.execute_one(
-            "SELECT * FROM rule_change_requests WHERE id = ? AND status = 'pending'",
-            (request_id,)
-        )
-
-        if not request:
-            return False
-
-        import json
-        new_rule_data = json.loads(request['new_rule'])
-        new_rule = FirewallRule.from_dict(new_rule_data)
-
-        # Применяем правило
-        self.rule_manager.update_rule(request['client_id'], new_rule)
-
-        # Обновляем статус запроса
-        self.db.execute_write(
-            """
-            UPDATE rule_change_requests
-            SET status = 'approved', reviewed_at = ?, reviewed_by = ?
-            WHERE id = ?
-            """,
-            (
+                "pending",
                 datetime.utcnow().isoformat() + "Z",
-                reviewer,
-                request_id
-            )
+            ),
         )
 
-        return True
+        return request_id
 
-    def reject_request(self, request_id: str, reviewer: str, reason: str) -> bool:
-        """
-        Отклонение запроса на изменение
-
-        Args:
-            request_id: ID запроса
-            reviewer: Имя отклоняющего
-            reason: Причина отклонения
-
-        Returns:
-            True если успешно
-        """
+    def _set_request_state(
+        self,
+        request_id: str,
+        status: str,
+        reviewer: str,
+        reason: Optional[str] = None,
+    ) -> None:
         self.db.execute_write(
             """
             UPDATE rule_change_requests
-            SET status = 'rejected', reviewed_at = ?, reviewed_by = ?, reason = ?
+            SET status = ?, reviewed_at = ?, reviewed_by = ?, reason = ?
             WHERE id = ?
             """,
             (
+                status,
                 datetime.utcnow().isoformat() + "Z",
                 reviewer,
                 reason,
-                request_id
-            )
+                request_id,
+            ),
         )
 
+    def _restore_snapshot(self, client_id: str, snapshot_rule: Optional[FirewallRule], rule_id: str) -> bool:
+        if snapshot_rule is None:
+            return self.rule_manager.delete_rule(client_id, rule_id)
+        return self.rule_manager.restore_rule(client_id, snapshot_rule)
+
+    def approve_request(self, request_id: str, reviewer: str) -> Tuple[bool, Optional[str]]:
+        request = self.db.execute_one(
+            "SELECT * FROM rule_change_requests WHERE id = ? AND status = 'pending'",
+            (request_id,),
+        )
+        if not request:
+            return False, "Request not found"
+
+        old_rule = FirewallRule.from_dict(json.loads(request["old_rule"])) if request["old_rule"] else None
+        new_rule = FirewallRule.from_dict(json.loads(request["new_rule"]))
+        client_id = request["client_id"]
+        rule_id = request["rule_id"]
+
+        current_rule = self.rule_manager.get_rule(client_id, rule_id)
+        if old_rule:
+            if not current_rule:
+                reason = "Snapshot is stale: the rule no longer exists"
+                self._set_request_state(request_id, "rejected", reviewer, reason)
+                return False, reason
+            if current_rule.calculate_checksum() != old_rule.calculate_checksum():
+                reason = "Snapshot is stale: the rule changed after the request was created"
+                self._set_request_state(request_id, "rejected", reviewer, reason)
+                return False, reason
+        elif current_rule:
+            reason = "Snapshot is stale: a rule with this ID already exists"
+            self._set_request_state(request_id, "rejected", reviewer, reason)
+            return False, reason
+
+        review = self.review_rule_change(
+            client_id=client_id,
+            rule_id=rule_id,
+            old_rule=old_rule,
+            new_rule=new_rule,
+            change_source=request["change_source"] or "approval",
+            require_approval=False,
+        )
+        if not review.allowed:
+            reason = review.reason or "Approval rejected by validation"
+            self._set_request_state(request_id, "rejected", reviewer, reason)
+            return False, reason
+
+        try:
+            if current_rule:
+                success = self.rule_manager.update_rule(client_id, new_rule)
+            else:
+                self.rule_manager.add_rule(client_id, new_rule)
+                success = True
+        except Exception as exc:
+            rollback_reason = f"Failed to apply approved change: {exc}"
+            logger.error(rollback_reason, exc_info=True)
+            self._restore_snapshot(client_id, current_rule or old_rule, rule_id)
+            self._set_request_state(request_id, "rejected", reviewer, rollback_reason)
+            return False, rollback_reason
+
+        if not success:
+            rollback_reason = "Failed to apply approved change"
+            self._restore_snapshot(client_id, current_rule or old_rule, rule_id)
+            self._set_request_state(request_id, "rejected", reviewer, rollback_reason)
+            return False, rollback_reason
+
+        try:
+            self._set_request_state(request_id, "approved", reviewer, None)
+        except Exception as exc:
+            logger.warning("Approved rule was applied but request state update failed: %s", exc, exc_info=True)
+        return True, None
+
+    def reject_request(self, request_id: str, reviewer: str, reason: str) -> bool:
+        request = self.db.execute_one(
+            "SELECT * FROM rule_change_requests WHERE id = ? AND status = 'pending'",
+            (request_id,),
+        )
+        if not request:
+            return False
+
+        self._set_request_state(request_id, "rejected", reviewer, reason)
         return True

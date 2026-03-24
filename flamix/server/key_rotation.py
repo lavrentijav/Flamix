@@ -95,7 +95,7 @@ class KeyRotation:
                     """,
                     (
                         key_id,
-                        old_key,
+                        self.db.protect_secret(old_key),
                         datetime.utcnow().isoformat() + "Z",
                         (datetime.utcnow() + timedelta(days=30)).isoformat() + "Z",  # Храним 30 дней
                         0  # Не активный
@@ -144,7 +144,7 @@ class KeyRotation:
             "SELECT key_data FROM encryption_keys WHERE id = ?",
             (key_id,)
         )
-        return result['key_data'] if result else None
+        return self.db.unprotect_secret(result['key_data']) if result else None
 
     def cleanup_expired_keys(self, retention_days: int = 30):
         """

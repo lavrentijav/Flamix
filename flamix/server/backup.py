@@ -115,11 +115,14 @@ class BackupManager:
         for client_data in backup_data.get('clients', []):
             client_id = client_data['id']
 
-            # Регистрируем клиента если нужно
+            # Регистрируем клиента если нужно (UPSERT без удаления связанных данных)
             self.db.execute_write(
                 """
-                INSERT OR REPLACE INTO clients (id, name, enabled)
+                INSERT INTO clients (id, name, enabled)
                 VALUES (?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    enabled = excluded.enabled
                 """,
                 (client_id, client_data.get('name', client_id), 1)
             )

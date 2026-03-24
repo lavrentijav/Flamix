@@ -9,30 +9,54 @@ from datetime import datetime, timedelta
 from flamix.common.diffie_hellman import DiffieHellman
 from flamix.common.crypto import derive_key
 from flamix.database.encrypted_db import EncryptedDB
+from flamix.server.security import extract_client_id_from_certificate
 
 logger = logging.getLogger(__name__)
 
 
 class ClientSession:
-    """Сессия клиента"""
+    """???????????? ??????????????"""
 
-    def __init__(self, client_id: str, session_id: str, session_key: bytes):
+    def __init__(
+        self,
+        client_id: str,
+        session_id: str,
+        session_key: bytes,
+        certificate_client_id: Optional[str] = None
+    ):
         """
-        Инициализация сессии
+        ?????????????????????????? ????????????
 
         Args:
-            client_id: ID клиента
-            session_id: ID сессии
-            session_key: Сессионный ключ
+            client_id: ID ??????????????
+            session_id: ID ????????????
+            session_key: ???????????????????? ????????
         """
-        self.client_id = client_id
+        self._client_id: Optional[str] = None
         self.session_id = session_id
         self.session_key = session_key
+        self.certificate_client_id = certificate_client_id
         self.created_at = datetime.utcnow()
         self.last_activity = datetime.utcnow()
         self.reader: Optional[asyncio.StreamReader] = None
         self.writer: Optional[asyncio.StreamWriter] = None
         self.dh: Optional[DiffieHellman] = None
+        self.client_id = client_id
+
+    @property
+    def client_id(self) -> str:
+        return self._client_id or ""
+
+    @client_id.setter
+    def client_id(self, value: str):
+        normalized_value = str(value)
+        if not normalized_value.startswith("temp-") and self.certificate_client_id:
+            if normalized_value != self.certificate_client_id:
+                raise ValueError(
+                    f"client_id {normalized_value!r} does not match mTLS certificate identity "
+                    f"{self.certificate_client_id!r}"
+                )
+        self._client_id = normalized_value
 
     def update_activity(self):
         """Обновление времени последней активности"""
@@ -65,6 +89,18 @@ class ClientManager:
         self.sessions: Dict[str, ClientSession] = {}  # session_id -> ClientSession
         self.client_sessions: Dict[str, str] = {}  # client_id -> session_id
 
+    def _extract_certificate_client_id(self, writer: asyncio.StreamWriter) -> Optional[str]:
+        """Extract the expected client_id from the peer TLS certificate if present."""
+        try:
+            ssl_object = writer.get_extra_info("ssl_object")
+            if not ssl_object:
+                return None
+            peer_cert = ssl_object.getpeercert(binary_form=True)
+            return extract_client_id_from_certificate(peer_cert)
+        except Exception as exc:
+            logger.warning("Failed to extract client identity from mTLS certificate: %s", exc)
+            return None
+
     async def create_session(
         self,
         client_id: str,
@@ -93,7 +129,20 @@ class ClientManager:
 
         # Пока что создаем временный ключ, реальный будет после DH обмена
         temp_key = b'\x00' * 32
-        session = ClientSession(client_id, session_id, temp_key)
+        certificate_client_id = self._extract_certificate_client_id(writer)
+        if certificate_client_id:
+            logger.info(
+                "Bound session %s to mTLS certificate identity %s",
+                session_id,
+                certificate_client_id,
+            )
+
+        session = ClientSession(
+            client_id,
+            session_id,
+            temp_key,
+            certificate_client_id=certificate_client_id,
+        )
         session.reader = reader
         session.writer = writer
         session.dh = dh
@@ -220,6 +269,12 @@ class ClientManager:
 
     def _save_session_to_db(self, session: ClientSession):
         """Сохранение сессии в БД"""
+        # Не сохраняем сессию, пока клиент не аутентифицирован
+        # (temp-* client_id не существует в таблице clients, FK constraint упадёт)
+        if session.client_id.startswith("temp-"):
+            logger.debug(f"Skipping DB save for temporary session {session.session_id}")
+            return
+
         try:
             import json
             dh_params = None
@@ -239,7 +294,7 @@ class ClientManager:
                 (
                     session.session_id,
                     session.client_id,
-                    session.session_key.hex(),
+                    None,
                     session.dh.get_public_key_bytes().hex() if session.dh else None,
                     dh_params,
                     expires_at,

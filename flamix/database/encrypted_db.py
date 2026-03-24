@@ -1,4 +1,4 @@
-"""SQLCipher обертка для шифрования базы данных"""
+"""База данных с опциональным шифрованием"""
 
 import sqlite3
 import threading
@@ -8,34 +8,33 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 import keyring
+from cryptography.fernet import Fernet
 
 logger = logging.getLogger(__name__)
 
 # Переменная окружения для отключения шифрования в тестах
 DISABLE_ENCRYPTION_ENV = 'FLAMIX_DISABLE_ENCRYPTION'
 
-try:
-    from pysqlcipher3 import dbapi2 as sqlcipher
-    SQLCIPHER_AVAILABLE = True
-except ImportError:
-    logger.warning("pysqlcipher3 not available, falling back to sqlite3")
-    import sqlite3 as sqlcipher
-    SQLCIPHER_AVAILABLE = False
+# Используем обычный sqlite3 (SQLCipher больше не требуется)
+sqlcipher = sqlite3
+SQLCIPHER_AVAILABLE = False  # Отключено, используем шифрование на уровне приложения
 
 
 class EncryptedDB:
-    """Зашифрованная база данных на основе SQLCipher"""
+    """База данных с опциональным шифрованием на уровне приложения"""
 
     SERVICE_NAME = "flamix"
     KEY_NAME = "db_encryption_key"
+    SECRET_PROTECTION_KEY_NAME = "db_secret_protection_key"
+    SECRET_PREFIX = "enc:v1:"
 
     def __init__(self, db_path: Path, key_rotation_hours: int = 24, use_encryption: Optional[bool] = None):
         """
-        Инициализация зашифрованной БД
+        Инициализация БД
 
         Args:
             db_path: Путь к файлу БД
-            key_rotation_hours: Часы до ротации ключа
+            key_rotation_hours: Часы до ротации ключа (зарезервировано для будущего использования)
             use_encryption: Использовать ли шифрование (None = автоопределение из env, False для тестов)
         """
         self.db_path = db_path
@@ -52,10 +51,13 @@ class EncryptedDB:
         
         if not self.use_encryption:
             logger.info("Database encryption is DISABLED (for testing)")
+        else:
+            logger.info("Using SQLite with application-level protection for selected secrets")
 
     def _get_encryption_key(self) -> str:
         """
         Получение ключа шифрования из защищенного хранилища
+        (зарезервировано для будущего использования)
 
         Returns:
             Ключ шифрования
@@ -69,49 +71,141 @@ class EncryptedDB:
             logger.info("Generated new encryption key")
         return key
 
+    def _get_secret_protection_key(self) -> bytes:
+        """Return the Fernet key used to wrap selected secrets stored in SQLite."""
+        key = keyring.get_password(self.SERVICE_NAME, self.SECRET_PROTECTION_KEY_NAME)
+        if not key:
+            key = Fernet.generate_key().decode("ascii")
+            keyring.set_password(self.SERVICE_NAME, self.SECRET_PROTECTION_KEY_NAME, key)
+            logger.info("Generated database secret protection key")
+        return key.encode("ascii")
+
+    def is_secret_protected(self, value: Optional[str]) -> bool:
+        """Return True if the value uses the current secret wrapper format."""
+        return bool(value) and value.startswith(self.SECRET_PREFIX)
+
+    def protect_secret(self, value: Optional[str]) -> Optional[str]:
+        """
+        Protect a sensitive value before writing it to SQLite.
+
+        This is intentionally limited to selected fields. It does not encrypt the
+        entire database file.
+        """
+        if value is None:
+            return None
+        if not self.use_encryption or self.is_secret_protected(value):
+            return value
+
+        token = Fernet(self._get_secret_protection_key()).encrypt(value.encode("utf-8"))
+        return f"{self.SECRET_PREFIX}{token.decode('ascii')}"
+
+    def unprotect_secret(self, value: Optional[str]) -> Optional[str]:
+        """Return the plaintext value for a protected secret."""
+        if value is None or not self.is_secret_protected(value):
+            return value
+
+        token = value[len(self.SECRET_PREFIX):].encode("ascii")
+        plaintext = Fernet(self._get_secret_protection_key()).decrypt(token)
+        return plaintext.decode("utf-8")
+
     def _get_connection(self, key: Optional[str] = None):
         """
-        Получение соединения с зашифрованной БД
+        Получение соединения с БД
 
         Args:
-            key: Ключ шифрования (если None, берется из хранилища)
+            key: Ключ шифрования (игнорируется, используется для совместимости)
 
         Returns:
-            Соединение с БД
+            Соединение с БД (контекстный менеджер)
         """
         db_path_str = str(self.db_path.resolve())
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Если шифрование отключено (для тестов)
-        if not self.use_encryption:
-            logger.debug("Using unencrypted SQLite (encryption disabled for tests)")
-            conn = sqlite3.connect(db_path_str)
-        elif SQLCIPHER_AVAILABLE:
-            if key is None:
-                key = self._get_encryption_key()
-            conn = sqlcipher.connect(db_path_str)
-            conn.execute(f"PRAGMA key='{key}'")
-            conn.execute("PRAGMA cipher_page_size=4096")
-            conn.execute("PRAGMA kdf_iter=64000")
-            conn.execute("PRAGMA cipher_hmac_algorithm=HMAC_SHA1")
-            conn.execute("PRAGMA cipher_kdf_algorithm=PBKDF2_HMAC_SHA1")
-        else:
-            # Fallback к обычному SQLite (не рекомендуется для продакшена)
-            logger.warning("Using unencrypted SQLite (SQLCipher not available)")
-            conn = sqlite3.connect(db_path_str)
-
+        # Используем обычный SQLite
+        # Шифрование чувствительных данных может быть добавлено на уровне приложения при необходимости
+        # Логирование убрано для уменьшения шума в логах (соединения создаются очень часто)
+        
+        conn = sqlite3.connect(db_path_str, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA synchronous=NORMAL")  # Улучшает производительность
 
         return conn
+    
+    def _encrypt_value(self, value: str) -> str:
+        """
+        Шифрование значения для хранения в БД (зарезервировано для будущего использования)
+        
+        Note: В текущей реализации используется обычный SQLite без шифрования на уровне БД.
+        Критичные данные (ключи, пароли) хранятся в keyring.
+        """
+        # Зарезервировано для будущей реализации шифрования чувствительных полей
+        return value
+    
+    def _decrypt_value(self, encrypted_value: str) -> str:
+        """
+        Расшифровка значения из БД (зарезервировано для будущего использования)
+        """
+        # Зарезервировано для будущей реализации шифрования чувствительных полей
+        return encrypted_value
+
+    def _migrate_sensitive_storage(self, db: sqlite3.Connection):
+        """
+        Remove or protect legacy plaintext secrets stored in SQLite.
+
+        Active session keys are no longer persisted at all. Rotation keys remain
+        available for compatibility, but are wrapped before staying in SQLite.
+        """
+        try:
+            scrubbed_sessions = db.execute(
+                """
+                UPDATE client_sessions
+                SET session_key = NULL
+                WHERE session_key IS NOT NULL AND session_key != ''
+                """
+            ).rowcount
+            if scrubbed_sessions:
+                logger.info("Scrubbed %s persisted session keys from SQLite", scrubbed_sessions)
+        except sqlite3.OperationalError:
+            logger.debug("Skipping session-key scrub because client_sessions is unavailable")
+
+        if not self.use_encryption:
+            return
+
+        try:
+            legacy_keys = db.execute(
+                "SELECT id, key_data FROM encryption_keys WHERE key_data IS NOT NULL"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            logger.debug("Skipping key migration because encryption_keys is unavailable")
+            return
+
+        migrated_keys = 0
+        for row in legacy_keys:
+            key_data = row["key_data"]
+            if self.is_secret_protected(key_data):
+                continue
+            db.execute(
+                "UPDATE encryption_keys SET key_data = ? WHERE id = ?",
+                (self.protect_secret(key_data), row["id"])
+            )
+            migrated_keys += 1
+
+        if migrated_keys:
+            logger.info("Protected %s legacy encryption keys stored in SQLite", migrated_keys)
 
     def initialize(self):
         """Инициализация схемы БД"""
-        logger.info(f"Initializing encrypted database at {self.db_path}")
+        logger.info(f"Initializing database at {self.db_path}")
+        
+        # Убеждаемся, что директория существует
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Database directory: {self.db_path.parent}")
 
         with self._lock:
-            with self._get_connection() as db:
+            db = self._get_connection()
+            try:
                 # Таблица клиентов
                 db.execute("""
                     CREATE TABLE IF NOT EXISTS clients (
@@ -123,6 +217,19 @@ class EncryptedDB:
                         registered_at TEXT DEFAULT CURRENT_TIMESTAMP,
                         enabled INTEGER DEFAULT 1,
                         metadata TEXT
+                    )
+                """)
+
+                db.execute("""
+                    CREATE TABLE IF NOT EXISTS client_bootstrap_tokens (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        client_id TEXT NOT NULL,
+                        token_hash TEXT NOT NULL UNIQUE,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        expires_at TEXT NOT NULL,
+                        used_at TEXT,
+                        metadata TEXT,
+                        FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
                     )
                 """)
 
@@ -140,6 +247,17 @@ class EncryptedDB:
                         enabled INTEGER DEFAULT 1,
                         FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
                         UNIQUE(client_id, rule_id)
+                    )
+                """)
+
+                # Таблица конфигураций клиентов
+                db.execute("""
+                    CREATE TABLE IF NOT EXISTS client_configs (
+                        client_id TEXT PRIMARY KEY,
+                        config_data TEXT NOT NULL,
+                        version INTEGER DEFAULT 1,
+                        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
                     )
                 """)
 
@@ -193,6 +311,26 @@ class EncryptedDB:
                     )
                 """)
 
+                # Таблица статистики трафика
+                db.execute("""
+                    CREATE TABLE IF NOT EXISTS traffic_stats (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        client_id TEXT NOT NULL,
+                        timestamp TEXT NOT NULL,
+                        src_ip TEXT,
+                        dst_ip TEXT,
+                        src_port INTEGER,
+                        dst_port INTEGER,
+                        protocol TEXT,
+                        action TEXT,
+                        bytes_in INTEGER DEFAULT 0,
+                        bytes_out INTEGER DEFAULT 0,
+                        connections INTEGER DEFAULT 0,
+                        bandwidth_bps REAL,
+                        FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+                    )
+                """)
+
                 # Таблица сессий клиентов
                 db.execute("""
                     CREATE TABLE IF NOT EXISTS client_sessions (
@@ -231,6 +369,38 @@ class EncryptedDB:
                     )
                 """)
 
+                # Таблица системного статуса клиентов
+                db.execute("""
+                    CREATE TABLE IF NOT EXISTS client_system_status (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        client_id TEXT NOT NULL,
+                        timestamp TEXT NOT NULL,
+                        cpu_percent REAL,
+                        cpu_per_core TEXT,
+                        memory_total INTEGER,
+                        memory_used INTEGER,
+                        memory_percent REAL,
+                        disk_usage TEXT,
+                        os_info TEXT,
+                        plugins_status TEXT,
+                        extra TEXT,
+                        FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+                    )
+                """)
+
+                # Таблица логов клиентов
+                db.execute("""
+                    CREATE TABLE IF NOT EXISTS client_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        client_id TEXT NOT NULL,
+                        timestamp TEXT NOT NULL,
+                        level TEXT NOT NULL,
+                        logger_name TEXT,
+                        message TEXT NOT NULL,
+                        FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+                    )
+                """)
+
                 # Индексы
                 db.execute("""
                     CREATE INDEX IF NOT EXISTS idx_client_rules_client 
@@ -252,11 +422,44 @@ class EncryptedDB:
                     CREATE INDEX IF NOT EXISTS idx_change_requests_status 
                     ON rule_change_requests(status)
                 """)
+                db.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_traffic_stats_client_timestamp 
+                    ON traffic_stats(client_id, timestamp)
+                """)
+                db.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_traffic_stats_src_ip 
+                    ON traffic_stats(src_ip)
+                """)
+                db.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_traffic_stats_dst_ip 
+                    ON traffic_stats(dst_ip)
+                """)
+                db.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_client_system_status_client_timestamp 
+                    ON client_system_status(client_id, timestamp)
+                """)
+                db.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_client_logs_client_timestamp 
+                    ON client_logs(client_id, timestamp)
+                """)
+                db.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_client_logs_level 
+                    ON client_logs(level)
+                """)
 
+                self._migrate_sensitive_storage(db)
                 db.commit()
-                logger.info("Database schema initialized")
+                logger.info("Database schema initialized successfully")
+            except Exception as e:
+                logger.error(f"Error initializing database: {e}", exc_info=True)
+                db.rollback()
+                raise
+            finally:
+                db.close()
 
         self._initialized = True
+        logger.info(f"Database initialized: {self.db_path}")
+        logger.info(f"Database initialized: {self.db_path}")
 
     def execute(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
         """
@@ -270,11 +473,20 @@ class EncryptedDB:
             Список результатов
         """
         with self._lock:
-            with self._get_connection() as db:
+            db = self._get_connection()
+            try:
                 cursor = db.execute(query, params)
                 db.commit()
                 rows = cursor.fetchall()
                 return [dict(row) for row in rows]
+            except Exception as e:
+                logger.error(f"Error executing query: {e}", exc_info=True)
+                logger.error(f"Query: {query}")
+                logger.error(f"Params: {params}")
+                db.rollback()
+                raise
+            finally:
+                db.close()
 
     def execute_one(self, query: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
         """
@@ -302,10 +514,49 @@ class EncryptedDB:
             ID последней вставленной строки
         """
         with self._lock:
-            with self._get_connection() as db:
+            db = self._get_connection()
+            try:
                 cursor = db.execute(query, params)
                 db.commit()
-                return cursor.lastrowid
+                lastrowid = cursor.lastrowid
+                logger.debug(f"Write query executed successfully, lastrowid: {lastrowid}")
+                return lastrowid
+            except Exception as e:
+                logger.error(f"Error executing write query: {e}", exc_info=True)
+                logger.error(f"Query: {query}")
+                logger.error(f"Params: {params}")
+                db.rollback()
+                raise
+            finally:
+                db.close()
+
+    def execute_delete(self, query: str, params: tuple = ()) -> int:
+        """
+        Выполнение DELETE запроса
+
+        Args:
+            query: SQL запрос DELETE
+            params: Параметры запроса
+
+        Returns:
+            Количество удаленных строк
+        """
+        with self._lock:
+            db = self._get_connection()
+            try:
+                cursor = db.execute(query, params)
+                db.commit()
+                rowcount = cursor.rowcount
+                logger.debug(f"Delete query executed successfully, rows deleted: {rowcount}")
+                return rowcount
+            except Exception as e:
+                logger.error(f"Error executing delete query: {e}", exc_info=True)
+                logger.error(f"Query: {query}")
+                logger.error(f"Params: {params}")
+                db.rollback()
+                raise
+            finally:
+                db.close()
 
     def close(self):
         """Закрытие соединений"""

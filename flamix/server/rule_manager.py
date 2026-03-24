@@ -35,6 +35,10 @@ class RuleManager:
         Returns:
             ID правила
         """
+        # Нормализуем client_id как строку
+        client_id_str = str(client_id)
+        logger.info(f"add_rule called: client_id='{client_id_str}' (type: {type(client_id_str).__name__}), rule_id='{rule.id}', enabled={rule.enabled}")
+        
         checksum = rule.calculate_checksum()
         rule_data = json.dumps(rule.to_dict())
 
@@ -46,7 +50,7 @@ class RuleManager:
             """,
             (
                 str(uuid.uuid4()),
-                client_id,
+                client_id_str,
                 rule.id,
                 rule_data,
                 rule.version,
@@ -57,12 +61,20 @@ class RuleManager:
         )
 
         # Сохраняем в историю
-        self._add_to_history(client_id, rule.id, "create", None, rule_data)
+        self._add_to_history(client_id_str, rule.id, "create", None, rule_data)
 
         # Обновляем checksum
-        self._update_checksum(client_id, rule.id, checksum)
+        self._update_checksum(client_id_str, rule.id, checksum)
 
-        logger.info(f"Added rule {rule.id} for client {client_id}")
+        logger.info(f"Successfully added rule {rule.id} for client {client_id_str} (enabled={rule.enabled})")
+        
+        # Проверим, что правило действительно сохранено
+        saved_rule = self.get_rule(client_id_str, rule.id)
+        if saved_rule:
+            logger.info(f"Verified: rule {rule.id} exists in database for client {client_id_str}")
+        else:
+            logger.error(f"ERROR: rule {rule.id} was not found in database after saving for client {client_id_str}")
+        
         return rule.id
 
     def update_rule(self, client_id: str, rule: FirewallRule) -> bool:
@@ -188,25 +200,134 @@ class RuleManager:
         Returns:
             Список правил
         """
+        logger.info(f"get_all_rules called for client_id={client_id} (type: {type(client_id).__name__})")
+        
+        # Убеждаемся, что client_id - строка
+        client_id_str = str(client_id) if client_id is not None else None
+        if client_id_str is None:
+            logger.error("client_id is None in get_all_rules!")
+            return []
+        
+        logger.debug(f"Querying database for client_id='{client_id_str}'")
         results = self.db.execute(
             """
             SELECT rule_data FROM client_rules 
             WHERE client_id = ? AND enabled = 1
-            ORDER BY created_at
+            ORDER BY created_at, rule_id
             """,
-            (client_id,)
+            (client_id_str,)
         )
 
+        # Преобразуем результаты в список для подсчета
+        results_list = list(results)
+        logger.info(f"Database query returned {len(results_list)} rows for client_id='{client_id_str}'")
+        
+        # Если результатов нет, проверим, есть ли вообще правила для этого клиента (включая отключенные)
+        if len(results_list) == 0:
+            all_results = self.db.execute(
+                """
+                SELECT COUNT(*) as count FROM client_rules 
+                WHERE client_id = ?
+                """,
+                (client_id_str,)
+            )
+            all_count = list(all_results)
+            if all_count and all_count[0].get('count', 0) > 0:
+                logger.warning(f"Found {all_count[0].get('count', 0)} rules for client_id='{client_id_str}', but all are disabled (enabled=0)")
+            else:
+                logger.warning(f"No rules found in database for client_id='{client_id_str}'")
+                
+                # Дополнительная диагностика: проверим все client_id в базе
+                all_clients = self.db.execute(
+                    """
+                    SELECT DISTINCT client_id FROM client_rules
+                    """
+                )
+                client_list = [row['client_id'] for row in all_clients]
+                if client_list:
+                    logger.info(f"Available client_ids in database: {client_list}")
+                    logger.info(f"Requested client_id='{client_id_str}' (type: {type(client_id_str).__name__})")
+                    # Проверим, есть ли совпадение при сравнении строк
+                    for db_client_id in client_list:
+                        if str(db_client_id) == str(client_id_str):
+                            logger.warning(f"Found matching client_id in database: '{db_client_id}' (type: {type(db_client_id).__name__})")
+                else:
+                    logger.warning("No rules found in database for any client")
+
         rules = []
-        for result in results:
+        for idx, result in enumerate(results_list):
             try:
                 rule_dict = json.loads(result['rule_data'])
-                rules.append(FirewallRule.from_dict(rule_dict))
+                rule = FirewallRule.from_dict(rule_dict)
+                rules.append(rule)
+                logger.debug(f"Successfully parsed rule {idx + 1}/{len(results_list)}: id={rule.id}, name={rule.name}")
             except Exception as e:
-                logger.error(f"Error parsing rule: {e}")
+                logger.error(f"Error parsing rule {idx + 1}: {e}", exc_info=True)
                 continue
 
+        logger.info(f"get_all_rules returning {len(rules)} rules for client_id='{client_id_str}'")
         return rules
+
+    def restore_rule(self, client_id: str, rule: FirewallRule) -> bool:
+        """
+        Restore a rule snapshot without changing its stored version.
+
+        This is used by authorization rollback paths where we need an exact
+        recovery of the previous server-side rule record.
+        """
+        client_id_str = str(client_id)
+        old_rule = self.get_rule(client_id_str, rule.id)
+        old_data = json.dumps(old_rule.to_dict()) if old_rule else None
+        rule_data = json.dumps(rule.to_dict())
+        checksum = rule.calculate_checksum()
+
+        existing = self.db.execute_one(
+            "SELECT id FROM client_rules WHERE client_id = ? AND rule_id = ?",
+            (client_id_str, rule.id)
+        )
+
+        if existing:
+            self.db.execute_write(
+                """
+                UPDATE client_rules
+                SET rule_data = ?, version = ?, checksum = ?, updated_at = ?, enabled = ?
+                WHERE client_id = ? AND rule_id = ?
+                """,
+                (
+                    rule_data,
+                    rule.version,
+                    checksum,
+                    rule.updated_at,
+                    1 if rule.enabled else 0,
+                    client_id_str,
+                    rule.id,
+                )
+            )
+        else:
+            self.db.execute_write(
+                """
+                INSERT INTO client_rules
+                (id, client_id, rule_id, rule_data, version, checksum, created_at, updated_at, enabled)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    client_id_str,
+                    rule.id,
+                    rule_data,
+                    rule.version,
+                    checksum,
+                    rule.created_at,
+                    rule.updated_at,
+                    1 if rule.enabled else 0,
+                )
+            )
+
+        self._add_to_history(client_id_str, rule.id, "restore", old_data, rule_data)
+        self._update_checksum(client_id_str, rule.id, checksum)
+
+        logger.info(f"Restored rule {rule.id} for client {client_id_str}")
+        return True
 
     def get_rule_checksum(self, client_id: str, rule_id: str) -> Optional[str]:
         """

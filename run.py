@@ -1,144 +1,161 @@
 #!/usr/bin/env python3
-"""Точка входа для запуска сервера Flamix"""
+"""Entry point for starting the Flamix server."""
 
+from __future__ import annotations
+
+import argparse
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 
-# Добавляем путь к модулям
+# Add local modules to import path
 sys.path.insert(0, str(Path(__file__).parent))
 
+from flamix.server.runtime_config import DEFAULT_CONFIG_PATH, ServerRuntimeConfig, load_runtime_config
 from flamix.server.server import FlamixServer
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-)
 
 logger = logging.getLogger(__name__)
 
 
-def setup_asyncio_exception_handler():
-    """Настраивает обработчик исключений для asyncio на Windows"""
-    def exception_handler(loop, context):
-        """Обработчик исключений для asyncio event loop"""
-        exception = context.get('exception')
-        # Подавляем ошибки разрыва соединения - это нормальное поведение
-        # когда клиент закрывает соединение до завершения обработки
-        if isinstance(exception, ConnectionResetError):
-            # Логируем только на уровне DEBUG, чтобы не засорять логи
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"Connection reset by peer (normal): {context.get('message', '')}")
-            return
-        
-        # Для других исключений используем стандартную обработку
-        if 'exception' in context:
-            logger.error(f"Unhandled exception in asyncio: {context.get('message', '')}", 
-                        exc_info=context.get('exception'))
-        else:
-            logger.error(f"Unhandled error in asyncio: {context.get('message', '')}")
-    
-    # Устанавливаем обработчик для нового event loop
-    try:
-        loop = asyncio.get_event_loop()
-        loop.set_exception_handler(exception_handler)
-    except RuntimeError:
-        # Если нет текущего event loop, обработчик будет установлен при создании
-        pass
+def _asyncio_exception_handler(loop, context):
+    """Handle noisy connection reset errors on Windows cleanly."""
+    exception = context.get("exception")
+    if isinstance(exception, ConnectionResetError):
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Connection reset by peer (normal): %s", context.get("message", ""))
+        return
+
+    if "exception" in context:
+        logger.error(
+            "Unhandled exception in asyncio: %s",
+            context.get("message", ""),
+            exc_info=context.get("exception"),
+        )
+    else:
+        logger.error("Unhandled error in asyncio: %s", context.get("message", ""))
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Flamix Server")
+    parser.add_argument("--config-file", type=str, default=None, help="Server runtime config file")
+    parser.add_argument("--host", type=str, default=None, help="Server host to bind to")
+    parser.add_argument("--port", type=int, default=None, help="Server port to bind to")
+    parser.add_argument("--db-path", type=str, default=None, help="Path to SQLite database")
+    parser.add_argument("--cert-dir", type=str, default=None, help="Directory for certificates")
+    parser.add_argument("--log-dir", type=str, default=None, help="Directory for logs")
+    parser.add_argument("--web-host", type=str, default=None, help="Web interface host")
+    parser.add_argument("--web-port", type=int, default=None, help="Web interface port")
+    parser.add_argument("--web-enabled", action="store_true", default=None, help="Enable web interface")
+    parser.add_argument("--web-disable", action="store_true", default=None, help="Disable web interface")
+    parser.add_argument("--periodic-task-interval-seconds", type=int, default=None, help="Server maintenance interval")
+    parser.add_argument("--session-timeout-seconds", type=int, default=None, help="Inactive session timeout")
+    parser.add_argument("--client-log-retention-days", type=int, default=None, help="Retention for client logs")
+    parser.add_argument("--analytics-retention-days", type=int, default=None, help="Retention for analytics data")
+    parser.add_argument("--traffic-stats-retention-days", type=int, default=None, help="Retention for traffic stats")
+    parser.add_argument("--system-status-retention-days", type=int, default=None, help="Retention for client system status")
+    parser.add_argument("--require-client-cert", action="store_true", default=None, help="Require client certificates")
+    parser.add_argument("--no-require-client-cert", action="store_true", default=None, help="Disable client certificate requirement")
+    parser.add_argument("--persist-runtime-config", action="store_true", default=None, help="Persist runtime config changes")
+    parser.add_argument("--no-persist-runtime-config", action="store_true", default=None, help="Do not persist runtime config changes")
+    parser.add_argument("--log-level", type=str, default=None, help="Logging level")
+    return parser
+
+
+def _determine_config_path(argv: list[str]) -> Path:
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--config-file", type=str, default=None)
+    pre_args, _ = pre_parser.parse_known_args(argv)
+
+    env_config_path = os.getenv("FLAMIX_SERVER_CONFIG_PATH")
+    config_path = pre_args.config_file or env_config_path or str(DEFAULT_CONFIG_PATH)
+    return Path(config_path)
+
+
+def _build_runtime_config(args: argparse.Namespace, config_path: Path) -> ServerRuntimeConfig:
+    overrides = {}
+    for field_name, value in (
+        ("server_host", args.host),
+        ("server_port", args.port),
+        ("db_path", Path(args.db_path) if args.db_path else None),
+        ("cert_dir", Path(args.cert_dir) if args.cert_dir else None),
+        ("log_dir", Path(args.log_dir) if args.log_dir else None),
+        ("web_host", args.web_host),
+        ("web_port", args.web_port),
+        ("periodic_task_interval_seconds", args.periodic_task_interval_seconds),
+        ("session_timeout_seconds", args.session_timeout_seconds),
+        ("client_log_retention_days", args.client_log_retention_days),
+        ("analytics_retention_days", args.analytics_retention_days),
+        ("traffic_stats_retention_days", args.traffic_stats_retention_days),
+        ("system_status_retention_days", args.system_status_retention_days),
+        ("log_level", args.log_level),
+    ):
+        if value is not None:
+            overrides[field_name] = value
+
+    if args.web_disable:
+        overrides["web_enabled"] = False
+    elif args.web_enabled is True:
+        overrides["web_enabled"] = True
+
+    if args.no_require_client_cert:
+        overrides["require_client_cert"] = False
+    elif args.require_client_cert is True:
+        overrides["require_client_cert"] = True
+
+    if args.no_persist_runtime_config:
+        overrides["persist_runtime_config"] = False
+    elif args.persist_runtime_config is True:
+        overrides["persist_runtime_config"] = True
+
+    return load_runtime_config(config_path=config_path, overrides=overrides)
 
 
 async def main():
-    """Главная функция запуска сервера"""
-    import argparse
+    """Main entry point for the server process."""
+    argv = sys.argv[1:]
+    config_path = _determine_config_path(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
 
-    parser = argparse.ArgumentParser(description="Flamix Server")
-    parser.add_argument(
-        "--host",
-        type=str,
-        default="0.0.0.0",
-        help="Host to bind to (default: 0.0.0.0)"
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8443,
-        help="Port to bind to (default: 8443)"
-    )
-    parser.add_argument(
-        "--db-path",
-        type=str,
-        default="data/server.db",
-        help="Path to database file (default: data/server.db)"
-    )
-    parser.add_argument(
-        "--cert-dir",
-        type=str,
-        default="certs",
-        help="Directory for certificates (default: certs)"
-    )
-    parser.add_argument(
-        "--web-enabled",
-        action="store_true",
-        default=True,
-        help="Enable web interface (default: True)"
-    )
-    parser.add_argument(
-        "--web-disable",
-        action="store_true",
-        help="Disable web interface"
-    )
-    parser.add_argument(
-        "--web-host",
-        type=str,
-        default="127.0.0.1",
-        help="Web interface host (default: 127.0.0.1)"
-    )
-    parser.add_argument(
-        "--web-port",
-        type=int,
-        default=8080,
-        help="Web interface port (default: 8080)"
+    runtime_config = _build_runtime_config(args, config_path)
+
+    logging.basicConfig(
+        level=getattr(logging, runtime_config.log_level.upper(), logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        force=True,
     )
 
-    args = parser.parse_args()
-    
-    # Обработка флагов веб-интерфейса
-    web_enabled = args.web_enabled and not args.web_disable
-
-    # Создаем директории если нужно
-    Path(args.db_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.cert_dir).mkdir(parents=True, exist_ok=True)
+    # Make sure runtime directories exist before startup.
+    runtime_config.db_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_config.cert_dir.mkdir(parents=True, exist_ok=True)
+    runtime_config.log_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("=" * 60)
     logger.info("Starting Flamix Server")
-    logger.info(f"Host: {args.host}")
-    logger.info(f"Port: {args.port}")
-    logger.info(f"Database: {args.db_path}")
-    logger.info(f"Certificates: {args.cert_dir}")
-    logger.info(f"Web interface: {'enabled' if web_enabled else 'disabled'}")
-    if web_enabled:
-        logger.info(f"Web interface: http://{args.web_host}:{args.web_port}")
+    logger.info("Config file: %s", runtime_config.config_path)
+    logger.info("Host: %s", runtime_config.server_host)
+    logger.info("Port: %s", runtime_config.server_port)
+    logger.info("Database: %s", runtime_config.db_path)
+    logger.info("Certificates: %s", runtime_config.cert_dir)
+    logger.info("Logs: %s", runtime_config.log_dir)
+    logger.info("Web interface: %s", "enabled" if runtime_config.web_enabled else "disabled")
+    if runtime_config.web_enabled:
+        logger.info("Web interface: http://%s:%s", runtime_config.web_host, runtime_config.web_port)
     logger.info("=" * 60)
 
-    server = FlamixServer(
-        host=args.host,
-        port=args.port,
-        db_path=Path(args.db_path),
-        cert_dir=Path(args.cert_dir),
-        web_enabled=web_enabled,
-        web_host=args.web_host,
-        web_port=args.web_port
-    )
+    server = FlamixServer(runtime_config=runtime_config)
+    asyncio.get_running_loop().set_exception_handler(_asyncio_exception_handler)
 
     try:
         await server.start()
         logger.info("Server is running. Press Ctrl+C to stop.")
-        await asyncio.Event().wait()  # Бесконечное ожидание
+        await asyncio.Event().wait()
     except KeyboardInterrupt:
         logger.info("Received shutdown signal")
-    except Exception as e:
-        logger.error(f"Server error: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error("Server error: %s", exc, exc_info=True)
         sys.exit(1)
     finally:
         await server.stop()
@@ -146,13 +163,10 @@ async def main():
 
 
 if __name__ == "__main__":
-    # Настраиваем обработчик исключений для asyncio перед запуском
-    setup_asyncio_exception_handler()
-    
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Shutdown complete")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error("Fatal error: %s", exc, exc_info=True)
         sys.exit(1)

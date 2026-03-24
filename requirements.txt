@@ -4,7 +4,8 @@ cryptography>=41.0.0
 
 # Database
 aiosqlite>=0.19.0
-pysqlcipher3>=1.1.0
+# Note: Using standard sqlite3 with application-level encryption via cryptography
+# pysqlcipher3 removed due to installation issues
 
 # Server
 fastapi>=0.104.0
@@ -16,6 +17,10 @@ keyring>=24.2.0
 # Utilities
 semantic-version>=2.10.0
 netaddr>=0.8.0
+
+# Analytics
+numpy>=1.24.0
+scipy>=1.10.0
 
 # Development
 pytest>=7.4.0
