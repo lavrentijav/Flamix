@@ -1,0 +1,43 @@
+FROM python:3.11-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    FLAMIX_DATA_DIR=/var/lib/flamix/data \
+    FLAMIX_CERT_DIR=/var/lib/flamix/certs \
+    FLAMIX_LOG_DIR=/var/log/flamix
+
+WORKDIR /opt/flamix
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gosu \
+        tini \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd \
+    --create-home \
+    --home-dir /home/flamix \
+    --shell /usr/sbin/nologin \
+    --uid 10001 \
+    flamix
+
+COPY server/requirements.txt /tmp/flamix-server-requirements.txt
+RUN pip install --upgrade pip \
+    && pip install -r /tmp/flamix-server-requirements.txt
+
+COPY server/run.py /opt/flamix/server/run.py
+COPY server/flamix /opt/flamix/server/flamix
+COPY scripts/flamix-server-entrypoint.sh /usr/local/bin/flamix-server-entrypoint.sh
+
+RUN chmod 0755 /usr/local/bin/flamix-server-entrypoint.sh \
+    && mkdir -p /var/lib/flamix/data /var/lib/flamix/certs /var/log/flamix \
+    && chown -R flamix:flamix /var/lib/flamix /var/log/flamix /opt/flamix
+
+EXPOSE 8443 8080
+
+VOLUME ["/var/lib/flamix/data", "/var/lib/flamix/certs", "/var/log/flamix"]
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/flamix-server-entrypoint.sh"]

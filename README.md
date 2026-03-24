@@ -126,7 +126,7 @@ curl https://127.0.0.1:8080/api/clients/my-client/certificate
    - `client.key` - Приватный ключ клиента
 
 2. Запустите клиент:
-   ```bash
+```bash
    python run.py --client-id my-client --server-host <server-ip>
    ```
 
@@ -171,3 +171,21 @@ curl https://127.0.0.1:8080/api/clients/my-client/certificate
 - Документация: `docs/`
 - Вики: ветка `master`
 - Issues: GitHub Issues
+
+## Container deployment
+
+Для self-hosted развертывания без внешних сервисов используйте Docker-контейнер для `server/`.
+Веб-admin интерфейс уже входит в серверный контейнер, а desktop GUI из `app/` остаётся локальным приложением.
+
+Быстрый старт:
+
+```bash
+mkdir -p data certs logs
+cp .env.example .env
+docker compose up -d --build
+```
+
+- Web/admin UI: `https://127.0.0.1:8080`
+- Client/server port: `8443`
+
+Подробная инструкция: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)

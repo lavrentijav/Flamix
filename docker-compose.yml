@@ -1,0 +1,38 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: flamix/server:local
+    container_name: flamix-server
+    restart: unless-stopped
+    init: true
+    environment:
+      FLAMIX_SERVER_HOST: ${FLAMIX_SERVER_HOST:-0.0.0.0}
+      FLAMIX_SERVER_PORT: ${FLAMIX_SERVER_PORT:-8443}
+      FLAMIX_WEB_HOST: ${FLAMIX_WEB_HOST:-0.0.0.0}
+      FLAMIX_WEB_PORT: ${FLAMIX_WEB_PORT:-8080}
+      FLAMIX_WEB_DISABLED: ${FLAMIX_WEB_DISABLED:-0}
+      FLAMIX_DB_PATH: ${FLAMIX_DB_PATH:-/var/lib/flamix/data/server.db}
+      FLAMIX_CERT_DIR: ${FLAMIX_CERT_DIR:-/var/lib/flamix/certs}
+      FLAMIX_LOG_DIR: ${FLAMIX_LOG_DIR:-/var/log/flamix}
+    ports:
+      - "${FLAMIX_SERVER_PORT:-8443}:8443"
+      - "${FLAMIX_WEB_PORT:-8080}:8080"
+    volumes:
+      - ./data:/var/lib/flamix/data
+      - ./certs:/var/lib/flamix/certs
+      - ./logs:/var/log/flamix
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          if [ "${FLAMIX_WEB_DISABLED:-0}" = "1" ]; then
+            python -c "import socket; socket.create_connection(('127.0.0.1', 8443), 5).close()"
+          else
+            curl -fk --max-time 5 https://127.0.0.1:8080/api/clients >/dev/null
+          fi
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s

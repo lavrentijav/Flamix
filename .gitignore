@@ -53,10 +53,18 @@ temp/
 
 # Testing
 .pytest_cache/
+.pytest-basetemp/
+.tmp-pytest/
+pytest-cache-files-*/
 .coverage
 htmlcov/
 .tox/
 .hypothesis/
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
 # OS
 .DS_Store
