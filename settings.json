@@ -1,0 +1,65 @@
+{
+    "connection": {
+        "server_url": "https://127.0.0.1:8080",
+        "verify_ssl": false,
+        "trust_store_mode": "system",
+        "ca_cert_path": "",
+        "timeout_connect": 3.049999952316284,
+        "timeout_read": 10.0,
+        "auto_connect": false
+    },
+    "refresh": {
+        "auto_refresh": true,
+        "refresh_interval": 30,
+        "monitoring_interval": 30,
+        "analytics_interval": 60,
+        "monitoring_status_limit": 1000,
+        "monitoring_logs_limit": 500,
+        "monitoring_logs_level": "all",
+        "monitoring_client_scope": "all"
+    },
+    "analytics": {
+        "limit": 1000,
+        "table_limit": 250,
+        "default_client": "all"
+    },
+    "logging": {
+        "level": "INFO",
+        "max_entries": 1000
+    },
+    "downloads": {
+        "directory": "C:\\Users\\Lavr\\Downloads",
+        "package_prefix": "flamix-client",
+        "open_folder_after_download": false,
+        "overwrite_existing": false
+    },
+    "ui": {
+        "font_name": "IosevkaTermSS11-Bold.ttf",
+        "font_size": 20,
+        "compact_mode": false,
+        "theme": "system",
+        "table_row_limit": 200
+    },
+    "diagnostics": {
+        "last_export_path": "C:\\Users\\Public\\Projects\\Flamix\\app\\settings.export.json",
+        "last_import_path": "C:\\Users\\Public\\Projects\\Flamix\\app\\settings.import.json"
+    },
+    "server_url": "https://127.0.0.1:8080",
+    "verify_ssl": false,
+    "trust_store_mode": "system",
+    "ca_cert_path": "",
+    "timeout_connect": 3.049999952316284,
+    "timeout_read": 10.0,
+    "auto_connect": false,
+    "auto_refresh": true,
+    "refresh_interval": 30,
+    "monitoring_interval": 30,
+    "analytics_interval": 60,
+    "analytics_limit": 1000,
+    "font_name": "IosevkaTermSS11-Bold.ttf",
+    "font_size": 20,
+    "download_dir": "C:\\Users\\Lavr\\Downloads",
+    "package_prefix": "flamix-client",
+    "open_folder_after_download": false,
+    "overwrite_existing": false
+}

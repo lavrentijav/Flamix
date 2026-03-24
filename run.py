@@ -5,8 +5,10 @@ import sys
 from pathlib import Path
 
 # Добавляем путь к модулям
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Импортируем FlamixGUI из основного gui.py файла
+# (gui.py теперь использует модули из gui/ директории)
 from app.gui import FlamixGUI
 
 if __name__ == "__main__":
