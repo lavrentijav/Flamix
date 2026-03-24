@@ -43,6 +43,15 @@ class MessageType(IntEnum):
     KEY_ROTATION = 0x70
     KEY_ROTATION_RESPONSE = 0x71
 
+    # Синхронизация конфигурации
+    CONFIG_REQUEST = 0x80
+    CONFIG_UPDATE = 0x81
+    CONFIG_RESPONSE = 0x82
+
+    # Системный мониторинг
+    SYSTEM_STATUS_REPORT = 0x90
+    LOG_REPORT = 0x91
+
     # Ошибки
     ERROR = 0xFF
 

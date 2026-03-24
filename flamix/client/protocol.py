@@ -85,9 +85,9 @@ class ClientProtocol:
                 logger.error("HMAC verification failed")
                 return None
 
-            # Расшифровка
+            # Расшифровка (без AAD, как при шифровании)
             try:
-                plaintext = decrypt_aes_gcm(self.session_key, nonce, ciphertext, header_bytes)
+                plaintext = decrypt_aes_gcm(self.session_key, nonce, ciphertext, b'')
             except Exception as e:
                 logger.error(f"Decryption failed: {e}")
                 return None
@@ -115,8 +115,13 @@ class ClientProtocol:
             return message
 
         except asyncio.TimeoutError:
-            logger.error("Timeout reading message")
-            return None
+            # Let timeout propagate so the caller can handle it
+            # (e.g. send heartbeat and continue)
+            raise
+        except (ConnectionResetError, BrokenPipeError, OSError, asyncio.IncompleteReadError) as e:
+            # Connection was closed/reset - this is normal when server disconnects
+            # Re-raise so caller can handle it properly (break the loop)
+            raise
         except Exception as e:
             logger.error(f"Error reading message: {e}", exc_info=True)
             return None
@@ -142,38 +147,34 @@ class ClientProtocol:
             sequence_number = self.sequence_number + 1
             self.sequence_number = sequence_number
 
-        # Добавляем timestamp
+        # Добавляем timestamp и session_id (не перезаписываем, если уже задан)
         payload['timestamp'] = time.time()
-        payload['session_id'] = self.session_id
+        payload.setdefault('session_id', self.session_id)
 
         # Сериализация JSON
         plaintext = json.dumps(payload).encode('utf-8')
 
-        # Создание заголовка
+        # Шифрование (без использования заголовка как AAD)
+        # Шифруем с пустым AAD, HMAC защитит заголовок отдельно
+        nonce, ciphertext = encrypt_aes_gcm(self.session_key, plaintext, b'')
+        
+        # Вычисляем размер payload: [nonce_length: 1][nonce: 12][hmac: 32][ciphertext: variable]
+        total_payload_size = 1 + len(nonce) + 32 + len(ciphertext)  # 32 = HMAC size
+        
+        # Создаём финальный заголовок с правильным размером
         header = MessageHeader(
             version=1,
             message_type=message_type,
-            payload_length=0,  # Заполним после шифрования
+            payload_length=total_payload_size,
             sequence_number=sequence_number,
             checksum=0,
             reserved=0
         )
-
-        # Шифрование
         header_bytes = header.to_bytes()
-        nonce, ciphertext = encrypt_aes_gcm(self.session_key, plaintext, header_bytes)
-
-        # Вычисление HMAC
+        
+        # Вычисляем HMAC от заголовка + nonce + ciphertext
         data_to_sign = header_bytes + nonce + ciphertext
         hmac_signature = calculate_hmac(self.session_key, data_to_sign)
-
-        # Обновление размера payload в заголовке
-        # Формат: [nonce_length: 1 byte][nonce: 12 bytes][hmac: 32 bytes][ciphertext: variable]
-        total_payload_size = 1 + len(nonce) + len(hmac_signature) + len(ciphertext)
-        header.payload_length = total_payload_size
-
-        # Пересоздаем заголовок с правильным размером
-        header_bytes = header.to_bytes()
 
         # Собираем финальное сообщение
         message = (

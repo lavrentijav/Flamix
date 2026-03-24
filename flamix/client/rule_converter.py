@@ -1,7 +1,7 @@
-"""Конвертация унифицированных правил в команды фаервола"""
+﻿"""Rule conversion helpers for firewall plugins."""
 
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 
 from flamix.common.rule_format import FirewallRule
 
@@ -9,138 +9,124 @@ logger = logging.getLogger(__name__)
 
 
 class RuleConverter:
-    """Конвертер правил в команды фаервола"""
+    """Convert unified rules into plugin-specific commands."""
 
     def __init__(self, plugin_manager=None):
-        """
-        Инициализация конвертера
-
-        Args:
-            plugin_manager: Менеджер плагинов для применения правил
-        """
         self.plugin_manager = plugin_manager
+        self.active_plugin = plugin_manager.get_active_plugin() if plugin_manager else None
+
+    def _refresh_active_plugin(self):
+        """Refresh cached active plugin reference from the manager."""
+        if self.plugin_manager:
+            self.active_plugin = self.plugin_manager.get_active_plugin()
+        return self.active_plugin
+
+    def get_plugin(self, plugin_id: Optional[str] = None):
+        """Resolve an explicit plugin id or fall back to the active plugin."""
+        active_plugin = self._refresh_active_plugin()
+        if plugin_id:
+            if active_plugin and getattr(active_plugin, "plugin_id", None) == plugin_id:
+                return active_plugin
+            if self.plugin_manager:
+                return self.plugin_manager.plugins.get(plugin_id)
+            return None
+        if active_plugin:
+            return active_plugin
+        if self.plugin_manager:
+            return self.plugin_manager.get_active_plugin()
+        return None
+
+    def get_preferred_plugin_id(self) -> Optional[str]:
+        """Return the active plugin id or the first available plugin id."""
+        plugin = self.get_plugin()
+        if plugin:
+            return getattr(plugin, "plugin_id", None)
+
+        if self.plugin_manager:
+            for plugin_id, plugin_instance in self.plugin_manager.plugins.items():
+                try:
+                    if plugin_instance.is_available():
+                        return plugin_id
+                except Exception as e:
+                    logger.debug(f"Error checking availability for plugin {plugin_id}: {e}")
+
+        return None
 
     def convert_to_plugin_format(self, rule: FirewallRule, plugin_id: str) -> Dict[str, Any]:
-        """
-        Конвертация унифицированного правила в формат плагина
-
-        Args:
-            rule: Унифицированное правило
-            plugin_id: ID плагина (например, 'netsh', 'iptables')
-
-        Returns:
-            Правило в формате плагина
-        """
+        """Convert a unified rule into plugin format."""
         plugin_rule = {
-            'name': rule.name,
-            'direction': 'in' if rule.direction == 'inbound' else 'out',
-            'action': rule.action,
-            'protocol': rule.protocol,
+            "name": rule.name,
+            "direction": "in" if rule.direction == "inbound" else "out",
+            "action": rule.action,
+            "protocol": rule.protocol,
         }
 
-        # Порты
         if rule.targets.ports:
-            ports_str = ','.join(rule.targets.ports)
-            if ports_str.lower() != 'any':
-                plugin_rule['local_port'] = ports_str
-                plugin_rule['remote_port'] = ports_str
+            ports_str = ",".join(rule.targets.ports)
+            if ports_str.lower() != "any":
+                plugin_rule["local_port"] = ports_str
+                plugin_rule["remote_port"] = ports_str
 
-        # IP адреса
         if rule.targets.ips:
-            ips_str = ','.join(rule.targets.ips)
-            if ips_str.lower() != 'any':
-                plugin_rule['remote_ip'] = ips_str
+            ips_str = ",".join(rule.targets.ips)
+            if ips_str.lower() != "any":
+                plugin_rule["remote_ip"] = ips_str
 
-        # Домены (для плагинов, которые поддерживают)
         if rule.targets.domains:
-            plugin_rule['domains'] = rule.targets.domains
+            plugin_rule["domains"] = rule.targets.domains
 
         return plugin_rule
 
-    async def apply_rule(self, rule: FirewallRule, plugin_id: str) -> Dict[str, Any]:
-        """
-        Применение правила через плагин
+    async def apply_rule(self, rule: FirewallRule, plugin_id: Optional[str] = None) -> Dict[str, Any]:
+        """Apply a rule through the selected plugin."""
+        plugin = self.get_plugin(plugin_id)
+        if not plugin:
+            requested_plugin = plugin_id or self.get_preferred_plugin_id()
+            if requested_plugin:
+                return {"success": False, "error": f"Plugin {requested_plugin} not available"}
+            return {"success": False, "error": "No plugin available"}
 
-        Args:
-            rule: Унифицированное правило
-            plugin_id: ID плагина
+        effective_plugin_id = plugin_id or getattr(plugin, "plugin_id", None) or "default"
+        plugin_rule = self.convert_to_plugin_format(rule, effective_plugin_id)
 
-        Returns:
-            Результат применения
-        """
-        if not self.plugin_manager:
-            return {'success': False, 'error': 'Plugin manager not available'}
-
-        # Конвертируем в формат плагина
-        plugin_rule = self.convert_to_plugin_format(rule, plugin_id)
-
-        # Получаем плагин
-        plugin_info = self.plugin_manager.plugins.get(plugin_id)
-        if not plugin_info or not plugin_info.get('enabled'):
-            return {'success': False, 'error': f'Plugin {plugin_id} not enabled'}
-
-        instance = plugin_info.get('instance')
-        if not instance:
-            return {'success': False, 'error': f'Plugin {plugin_id} instance not available'}
-
-        # Применяем правило
         try:
-            result = await instance.apply_rule(plugin_rule)
-            return result
+            return await plugin.apply_rule(plugin_rule)
         except Exception as e:
-            logger.error(f"Error applying rule through plugin {plugin_id}: {e}", exc_info=True)
-            return {'success': False, 'error': str(e)}
+            logger.error(f"Error applying rule through plugin {effective_plugin_id}: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
 
     def convert_from_plugin_format(self, plugin_rule: Dict[str, Any], rule_id: str) -> FirewallRule:
-        """
-        Конвертация правила из формата плагина в унифицированный формат
-
-        Args:
-            plugin_rule: Правило в формате плагина
-            rule_id: ID правила
-
-        Returns:
-            Унифицированное правило
-        """
+        """Convert a plugin rule back into the unified rule format."""
         from flamix.common.rule_format import RuleTargets
 
         targets = RuleTargets()
 
-        # Порты
-        if 'local_port' in plugin_rule and plugin_rule['local_port']:
-            targets.ports.append(plugin_rule['local_port'])
-        if 'remote_port' in plugin_rule and plugin_rule['remote_port']:
-            if plugin_rule['remote_port'] not in targets.ports:
-                targets.ports.append(plugin_rule['remote_port'])
+        if "local_port" in plugin_rule and plugin_rule["local_port"]:
+            targets.ports.append(plugin_rule["local_port"])
+        if "remote_port" in plugin_rule and plugin_rule["remote_port"]:
+            if plugin_rule["remote_port"] not in targets.ports:
+                targets.ports.append(plugin_rule["remote_port"])
 
-        # IP адреса
-        if 'remote_ip' in plugin_rule and plugin_rule['remote_ip']:
-            # Разделяем по запятой если несколько IP
-            ips = [ip.strip() for ip in plugin_rule['remote_ip'].split(',')]
+        if "remote_ip" in plugin_rule and plugin_rule["remote_ip"]:
+            ips = [ip.strip() for ip in plugin_rule["remote_ip"].split(",")]
             targets.ips.extend(ips)
 
-        if 'local_ip' in plugin_rule and plugin_rule['local_ip']:
-            ips = [ip.strip() for ip in plugin_rule['local_ip'].split(',')]
+        if "local_ip" in plugin_rule and plugin_rule["local_ip"]:
+            ips = [ip.strip() for ip in plugin_rule["local_ip"].split(",")]
             targets.ips.extend(ips)
 
-        # Домены
-        if 'domains' in plugin_rule:
-            targets.domains.extend(plugin_rule['domains'])
+        if "domains" in plugin_rule:
+            targets.domains.extend(plugin_rule["domains"])
 
-        # Направление
-        direction = 'inbound' if plugin_rule.get('direction', 'in') == 'in' else 'outbound'
+        direction = "inbound" if plugin_rule.get("direction", "in") == "in" else "outbound"
+        protocol = plugin_rule.get("protocol", "TCP").upper()
 
-        # Протокол
-        protocol = plugin_rule.get('protocol', 'TCP').upper()
-
-        rule = FirewallRule(
+        return FirewallRule(
             id=rule_id,
-            name=plugin_rule.get('name', 'Unnamed rule'),
-            action=plugin_rule.get('action', 'block'),
+            name=plugin_rule.get("name", "Unnamed rule"),
+            action=plugin_rule.get("action", "block"),
             direction=direction,
             targets=targets,
             protocol=protocol,
-            enabled=plugin_rule.get('enabled', True)
+            enabled=plugin_rule.get("enabled", True),
         )
-
-        return rule

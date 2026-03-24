@@ -52,33 +52,81 @@ class RuleSync:
         Returns:
             Список синхронизированных правил
         """
+        logger.info("=" * 60)
+        logger.info("RuleSync.sync() called")
+        logger.info(f"Client connected: {self.client.connected}")
+        logger.info(f"Current synced rules count: {len(self.synced_rules)}")
+        logger.info(f"Current applied rules count: {len(self.applied_rules)}")
+        logger.info("=" * 60)
+        
         if not self.client.connected:
             logger.warning("Client not connected, cannot sync")
+            logger.warning(f"Connection status: connected={self.client.connected}")
             return []
 
         try:
             # Получаем правила с сервера
+            logger.info("Calling client.sync_rules()...")
             rules = await self.client.sync_rules()
+            logger.info(f"client.sync_rules() returned {len(rules)} rules")
 
+            if not rules:
+                logger.warning("No rules received from server!")
+                logger.warning("This could mean:")
+                logger.warning("  - Server has no rules configured for this client")
+                logger.warning("  - Server returned empty rules list")
+                logger.warning("  - Error occurred during rule retrieval")
+                return []
+
+            logger.info(f"Processing {len(rules)} rules...")
+            
             # Применяем новые/измененные правила
-            for rule in rules:
-                await self._apply_rule_if_needed(rule)
+            applied_count = 0
+            skipped_count = 0
+            for idx, rule in enumerate(rules):
+                logger.debug(f"Processing rule {idx + 1}/{len(rules)}: id={rule.id}, name={rule.name}")
+                try:
+                    result = await self._apply_rule_if_needed(rule)
+                    if result:
+                        applied_count += 1
+                    else:
+                        skipped_count += 1
+                except Exception as e:
+                    logger.error(f"Error applying rule {rule.id}: {e}", exc_info=True)
+                    skipped_count += 1
+
+            logger.info(f"Rule application summary: applied={applied_count}, skipped={skipped_count}")
 
             # Удаляем правила, которых больше нет на сервере
             server_rule_ids = {rule.id for rule in rules}
             local_rule_ids = set(self.synced_rules.keys())
             deleted_rule_ids = local_rule_ids - server_rule_ids
 
-            for rule_id in deleted_rule_ids:
-                await self._remove_rule(rule_id)
+            logger.info(f"Rule deletion check: server={len(server_rule_ids)}, local={len(local_rule_ids)}, to_delete={len(deleted_rule_ids)}")
+            
+            if deleted_rule_ids:
+                logger.info(f"Removing {len(deleted_rule_ids)} deleted rules: {list(deleted_rule_ids)}")
+                for rule_id in deleted_rule_ids:
+                    await self._remove_rule(rule_id)
+            else:
+                logger.debug("No rules to delete")
 
             self.synced_rules = {rule.id: rule for rule in rules}
-            logger.info(f"Synced {len(rules)} rules")
+            logger.info("=" * 60)
+            logger.info(f"Sync completed successfully:")
+            logger.info(f"  - Total rules synced: {len(rules)}")
+            logger.info(f"  - Rules applied: {applied_count}")
+            logger.info(f"  - Rules skipped: {skipped_count}")
+            logger.info(f"  - Rules deleted: {len(deleted_rule_ids)}")
+            logger.info(f"  - Final synced rules count: {len(self.synced_rules)}")
+            logger.info("=" * 60)
 
             return rules
 
         except Exception as e:
-            logger.error(f"Error syncing rules: {e}", exc_info=True)
+            logger.error("=" * 60)
+            logger.error(f"ERROR in RuleSync.sync(): {e}", exc_info=True)
+            logger.error("=" * 60)
             return []
 
     async def _apply_rule_if_needed(self, rule: FirewallRule):
@@ -88,31 +136,57 @@ class RuleSync:
         Args:
             rule: Правило для применения
         """
+        logger.debug(f"_apply_rule_if_needed called for rule: id={rule.id}, name={rule.name}")
+        
         existing_rule = self.synced_rules.get(rule.id)
 
         # Проверяем, изменилось ли правило
         if existing_rule:
+            logger.debug(f"Existing rule found: id={existing_rule.id}")
             existing_checksum = existing_rule.calculate_checksum()
             new_checksum = rule.calculate_checksum()
+            logger.debug(f"Checksums: existing={existing_checksum}, new={new_checksum}")
+            
             if existing_checksum == new_checksum:
                 # Правило не изменилось
-                return
+                logger.debug(f"Rule {rule.id} unchanged (checksums match), skipping application")
+                return False
+            else:
+                logger.info(f"Rule {rule.id} changed (checksums differ), will apply")
+        else:
+            logger.info(f"New rule {rule.id} (not in synced_rules), will apply")
 
         # Определяем плагин для применения
         # Пока что используем первый доступный плагин
         # В реальной версии это должно быть настраиваемо
+        logger.debug("Determining plugin for rule...")
         plugin_id = self._get_plugin_for_rule(rule)
         if not plugin_id:
             logger.warning(f"No plugin available for rule {rule.id}")
-            return
+            logger.warning(f"Rule details: name={rule.name}, action={rule.action}, direction={rule.direction}")
+            return False
+        
+        logger.info(f"Using plugin {plugin_id} for rule {rule.id}")
 
         # Применяем правило
-        result = await self.rule_converter.apply_rule(rule, plugin_id)
-        if result.get('success', False):
-            self.applied_rules[rule.id] = plugin_id
-            logger.info(f"Applied rule {rule.id} via plugin {plugin_id}")
-        else:
-            logger.error(f"Failed to apply rule {rule.id}: {result.get('error', 'Unknown error')}")
+        logger.debug(f"Calling rule_converter.apply_rule(rule_id={rule.id}, plugin_id={plugin_id})...")
+        try:
+            result = await self.rule_converter.apply_rule(rule, plugin_id)
+            logger.debug(f"apply_rule result: {result}")
+            
+            if result.get('success', False):
+                self.applied_rules[rule.id] = plugin_id
+                logger.info(f"✓ Successfully applied rule {rule.id} via plugin {plugin_id}")
+                return True
+            else:
+                error_msg = result.get('error', 'Unknown error')
+                logger.error(f"✗ Failed to apply rule {rule.id}: {error_msg}")
+                logger.error(f"  Plugin: {plugin_id}")
+                logger.error(f"  Rule details: name={rule.name}, action={rule.action}")
+                return False
+        except Exception as e:
+            logger.error(f"Exception while applying rule {rule.id}: {e}", exc_info=True)
+            return False
 
     async def _remove_rule(self, rule_id: str):
         """
@@ -140,14 +214,7 @@ class RuleSync:
         Returns:
             ID плагина или None
         """
-        # Упрощенная логика: используем первый доступный плагин
-        # В реальной версии это должно быть настраиваемо
-        if self.rule_converter.plugin_manager:
-            plugins = self.rule_converter.plugin_manager.list_plugins()
-            for plugin in plugins:
-                if plugin.get('enabled'):
-                    return plugin.get('id')
-        return None
+        return self.rule_converter.get_preferred_plugin_id()
 
     async def _sync_loop(self):
         """Цикл синхронизации"""

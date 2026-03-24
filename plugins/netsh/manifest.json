@@ -1,0 +1,87 @@
+{
+  "id": "com.flamix.netsh",
+  "name": "NetSh Windows Firewall Plugin",
+  "version": "1.0.0",
+  "author": "Flamix Team",
+  "platforms": ["windows"],
+  "entry_point": "plugin.py",
+  "capabilities": ["manage_rules", "detect_firewall"],
+  "permissions": [
+    "run_shell_commands:netsh",
+    "run_shell_commands:netsh advfirewall"
+  ],
+  "dependencies": {},
+  "signature": "",
+  "checksum": "",
+  "api_version": "1.0",
+  "firewall_support": [
+    {
+      "name": "Windows Firewall",
+      "versions": {
+        "min": null,
+        "max": null,
+        "exact": []
+      },
+      "detect": {
+        "type": "command",
+        "value": "netsh advfirewall show allprofiles state"
+      },
+      "regex": [
+        "State\\s+ON",
+        "State\\s+OFF"
+      ],
+      "requires_root": true,
+      "priority": 100
+    }
+  ],
+  "rule_schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "Имя правила"
+      },
+      "direction": {
+        "type": "string",
+        "enum": ["in", "out"],
+        "description": "Направление трафика: in (входящий) или out (исходящий)"
+      },
+      "action": {
+        "type": "string",
+        "enum": ["allow", "block"],
+        "description": "Действие: allow (разрешить) или block (заблокировать)"
+      },
+      "protocol": {
+        "type": "string",
+        "enum": ["TCP", "UDP", "ICMP", "ANY"],
+        "description": "Протокол"
+      },
+      "local_port": {
+        "type": "string",
+        "description": "Локальный порт (например, '80', '443', '80,443' или 'any')"
+      },
+      "remote_port": {
+        "type": "string",
+        "description": "Удаленный порт (например, '80', '443', '80,443' или 'any')"
+      },
+      "local_ip": {
+        "type": "string",
+        "description": "Локальный IP адрес (например, '192.168.1.1' или 'any')"
+      },
+      "remote_ip": {
+        "type": "string",
+        "description": "Удаленный IP адрес или подсеть (например, '192.168.1.0/24' или 'any')"
+      },
+      "profile": {
+        "type": "string",
+        "enum": ["domain", "private", "public", "any"],
+        "description": "Профиль Windows Firewall"
+      },
+      "program": {
+        "type": "string",
+        "description": "Путь к программе (опционально)"
+      }
+    },
+    "required": ["name", "direction", "action", "protocol"]
+  }
+}

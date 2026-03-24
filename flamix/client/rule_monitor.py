@@ -88,12 +88,13 @@ class RuleMonitor:
 
         # Получаем все плагины
         plugins = self.rule_converter.plugin_manager.list_plugins()
-        for plugin in plugins:
-            if not plugin.get('enabled'):
+        for plugin_info in plugins:
+            if not plugin_info.get('enabled'):
                 continue
 
-            plugin_id = plugin.get('id')
-            plugin_instance = self.rule_converter.plugin_manager.plugins.get(plugin_id, {}).get('instance')
+            plugin_id = plugin_info.get('id')
+            # plugins dict contains FirewallPlugin objects directly, not dicts
+            plugin_instance = self.rule_converter.plugin_manager.plugins.get(plugin_id)
 
             if not plugin_instance:
                 continue
@@ -167,12 +168,7 @@ class RuleMonitor:
         Returns:
             ID плагина или None
         """
-        if self.rule_converter.plugin_manager:
-            plugins = self.rule_converter.plugin_manager.list_plugins()
-            for plugin in plugins:
-                if plugin.get('enabled'):
-                    return plugin.get('id')
-        return None
+        return self.rule_converter.get_preferred_plugin_id()
 
     def update_known_checksum(self, rule_id: str, checksum: str):
         """

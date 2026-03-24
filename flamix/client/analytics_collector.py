@@ -110,6 +110,39 @@ class AnalyticsCollector:
 
         self.events.append(event)
 
+    async def record_traffic_stats(self, traffic_snapshot: Dict[str, Any]):
+        """
+        Запись и немедленная отправка статистики трафика для реального времени
+
+        Args:
+            traffic_snapshot: Снимок статистики трафика от TrafficCollector
+        """
+        if not self.enabled:
+            return
+
+        # Создаем событие статистики трафика
+        event = {
+            'event_type': 'traffic_stats',
+            'timestamp': traffic_snapshot.get('timestamp', datetime.utcnow().isoformat() + "Z"),
+            'connections': traffic_snapshot.get('connections', []),
+            'network_io': traffic_snapshot.get('network_io', {}),
+            'aggregated': traffic_snapshot.get('aggregated', {}),
+            'firewall_events': traffic_snapshot.get('firewall_events', [])
+        }
+
+        # Для статистики трафика отправляем сразу для реального времени
+        # Обычные события (block/allow) накапливаются в батчах
+        if self.client.connected:
+            try:
+                await self._send_traffic_stats_immediately(event)
+            except Exception as e:
+                logger.error(f"Error sending traffic stats immediately: {e}", exc_info=True)
+                # Если не удалось отправить, добавляем в очередь для повторной попытки
+                self.events.append(event)
+        else:
+            # Если не подключен, добавляем в очередь
+            self.events.append(event)
+
     async def _report_loop(self):
         """Цикл отправки аналитики"""
         while self.running:
@@ -120,23 +153,45 @@ class AnalyticsCollector:
             except Exception as e:
                 logger.error(f"Error in analytics report loop: {e}", exc_info=True)
 
+    async def _send_traffic_stats_immediately(self, event: Dict[str, Any]):
+        """Немедленная отправка статистики трафика для реального времени"""
+        try:
+            await self.client.send_analytics({
+                'events': [event],
+                'client_id': self.client.client_id
+            })
+            # Удаляем отправленное событие из очереди
+            if event in self.events:
+                self.events.remove(event)
+            logger.debug("Sent traffic stats immediately to server")
+        except Exception as e:
+            logger.error(f"Error sending traffic stats immediately: {e}", exc_info=True)
+
     async def _send_events(self):
-        """Отправка событий на сервер"""
+        """Отправка событий на сервер (батчами для обычных событий)"""
         if not self.events:
             return
 
         try:
-            # Отправляем события батчами
+            # Фильтруем только обычные события (не traffic_stats, они уже отправлены)
+            regular_events = [e for e in self.events if e.get('event_type') != 'traffic_stats']
+            
+            if not regular_events:
+                # Если остались только traffic_stats (не должны быть, но на всякий случай)
+                self.events = []
+                return
+
+            # Отправляем обычные события батчами
             batch_size = 100
-            for i in range(0, len(self.events), batch_size):
-                batch = self.events[i:i + batch_size]
+            for i in range(0, len(regular_events), batch_size):
+                batch = regular_events[i:i + batch_size]
                 await self.client.send_analytics({
                     'events': batch,
                     'client_id': self.client.client_id
                 })
 
             # Очищаем отправленные события
-            self.events = []
+            self.events = [e for e in self.events if e.get('event_type') == 'traffic_stats']
             logger.debug(f"Sent {len(batch)} analytics events to server")
 
         except Exception as e:
