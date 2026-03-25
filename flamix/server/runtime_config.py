@@ -61,7 +61,7 @@ class ServerRuntimeConfig:
     server_host: str = "0.0.0.0"
     server_port: int = 8443
     web_enabled: bool = True
-    web_host: str = "127.0.0.1"
+    web_host: str = "0.0.0.0"
     web_port: int = 8080
     db_path: Path = Path("data/server.db")
     cert_dir: Path = Path("certs")

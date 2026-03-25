@@ -74,7 +74,7 @@ class WebAPI:
         rule_manager: RuleManager,
         rule_authorization: RuleAuthorization,
         db: EncryptedDB,
-        host: str = "127.0.0.1",
+        host: str = "0.0.0.0",
         port: int = 8080,
         security=None,
         server_host: str = "0.0.0.0",
@@ -408,6 +408,24 @@ class WebAPI:
             "font_size": 13,
             "ui_theme": "default",
         }
+
+    def _build_bootstrap_enroll_url(self, advertised_server_host: str) -> str:
+        """Build an enrollment URL that is reachable from the client node."""
+        runtime_config = self.runtime_config
+        web_host = str(runtime_config.web_host or "").strip()
+        advertised_server_host = str(advertised_server_host or "").strip() or "127.0.0.1"
+
+        if web_host in {"", "0.0.0.0", "::"}:
+            enroll_host = advertised_server_host
+        elif web_host in {"127.0.0.1", "localhost", "::1"}:
+            if advertised_server_host in {"127.0.0.1", "localhost", "::1"}:
+                enroll_host = "127.0.0.1"
+            else:
+                enroll_host = advertised_server_host
+        else:
+            enroll_host = web_host
+
+        return f"https://{enroll_host}:{runtime_config.web_port}/api/bootstrap/enroll"
 
     def _create_bootstrap_client_zip(
         self,
@@ -2079,7 +2097,7 @@ flamix-client-{client_id}/
                     "enabled": True,
                     "token": bootstrap["token"],
                     "expires_at": bootstrap["expires_at"],
-                    "enroll_url": f"https://{server_ip}:{self.port}/api/bootstrap/enroll",
+                    "enroll_url": self._build_bootstrap_enroll_url(server_ip),
                     "mode": "csr",
                 }
 

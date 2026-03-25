@@ -35,7 +35,7 @@ class FlamixServer:
         db_path: Path = None,
         cert_dir: Path = None,
         web_enabled: bool = True,
-        web_host: str = "127.0.0.1",
+        web_host: str = "0.0.0.0",
         web_port: int = 8080,
         runtime_config: Optional[ServerRuntimeConfig] = None
     ):
