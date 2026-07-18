@@ -1,18 +1,77 @@
+@REM This file is UTF-8 encoded, so we need to update the current code page while executing it
+@for /f "tokens=2 delims=:." %%a in ('"%SystemRoot%\System32\chcp.com"') do @set _OLD_CODEPAGE=%%a
+
+@if defined _OLD_CODEPAGE (
+    "%SystemRoot%\System32\chcp.com" 65001 > nul
+)
+
+@set "VIRTUAL_ENV=D:\Projects\python\Flamix\.venv"
+
+@set "VIRTUAL_ENV_PROMPT="
+@if NOT DEFINED VIRTUAL_ENV_PROMPT (
+    @for %%d in ("%VIRTUAL_ENV%") do @set "VIRTUAL_ENV_PROMPT=%%~nxd"
+)
+
+@if defined _OLD_VIRTUAL_PROMPT (
+    @set "PROMPT=%_OLD_VIRTUAL_PROMPT%"
+) else (
+    @if not defined PROMPT (
+        @set "PROMPT=$P$G"
+    )
+    @if not defined VIRTUAL_ENV_DISABLE_PROMPT (
+        @set "_OLD_VIRTUAL_PROMPT=%PROMPT%"
+    )
+)
+@if not defined VIRTUAL_ENV_DISABLE_PROMPT (
+    @set "PROMPT=(%VIRTUAL_ENV_PROMPT%) %PROMPT%"
+)
+
+@REM Don't use () to avoid problems with them in %PATH%
+@if defined _OLD_VIRTUAL_PYTHONHOME @goto ENDIFVHOME
+    @set "_OLD_VIRTUAL_PYTHONHOME=%PYTHONHOME%"
+:ENDIFVHOME
+
+@set PYTHONHOME=
+
+@REM if defined _OLD_VIRTUAL_PATH (
+@if not defined _OLD_VIRTUAL_PATH @goto ENDIFVPATH1
+    @set "PATH=%_OLD_VIRTUAL_PATH%"
+:ENDIFVPATH1
+@REM ) else (
+@if defined _OLD_VIRTUAL_PATH @goto ENDIFVPATH2
+    @set "_OLD_VIRTUAL_PATH=%PATH%"
+:ENDIFVPATH2
+
+@set "PATH=%VIRTUAL_ENV%\Scripts;%PATH%"
+
+@if defined _OLD_CODEPAGE (
+    "%SystemRoot%\System32\chcp.com" %_OLD_CODEPAGE% > nul
+    @set _OLD_CODEPAGE=
+)
+
+
 @echo off
 REM Скрипт запуска Flamix без установки (Windows)
 
-if "%1"=="agent" (
-    python run_agent.py
-) else if "%1"=="cli" (
-    python run_cli.py %*
+if "%1"=="cli" (
+    python demo_cli.py %*
 ) else if "%1"=="gui" (
-    python run_gui.py
+    python demo_gui.py
+) else if "%1"=="" (
+    REM Если параметров нет — запускаем GUI по умолчанию
+    python demo_gui.py
 ) else (
-    echo Usage: run.bat [agent^|cli^|gui] [arguments]
+    echo Usage: run.bat [cli^|gui] [arguments]
     echo.
     echo Examples:
-    echo   run.bat agent
     echo   run.bat cli list-plugins
     echo   run.bat gui
+    echo   run.bat
+    pause
+    exit /b 1
 )
 
+REM Пауза только если не запущен GUI напрямую или без параметров
+if /i not "%1"=="gui" if not "%1"=="" (
+    pause
+)

@@ -51,3 +51,28 @@ Thumbs.db
 # Plugins
 *.zip
 !examples/*.zip
+
+# --- secrets & local-only (auto-added) ---
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.session
+*.session-journal
+*credentials*.json
+*credentials*.txt
+id_rsa
+id_ed25519
+*.db
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+*.log
+node_modules/
+

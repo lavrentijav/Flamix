@@ -78,11 +78,66 @@ class CoreAPI:
                 timeout=30.0
             )
 
-            return {
+            # Декодируем с правильной кодировкой для Windows
+            # На русской Windows netsh выводит в cp1251, поэтому пробуем сначала её
+            import sys
+            
+            # Определяем системную кодировку
+            if sys.platform == "win32":
+                # На Windows netsh обычно выводит в системной кодировке (cp1251 для русской Windows)
+                # Пробуем сначала cp1251, потом системную кодировку, потом UTF-8
+                encodings_to_try = ["cp1251", "cp866", "utf-8"]
+            else:
+                encodings_to_try = ["utf-8"]
+            
+            # Пробуем декодировать stdout
+            stdout_text = None
+            for encoding in encodings_to_try:
+                try:
+                    stdout_text = stdout.decode(encoding, errors="strict")
+                    break
+                except (UnicodeDecodeError, LookupError):
+                    continue
+            
+            # Если ничего не сработало, используем replace для последней попытки
+            if stdout_text is None:
+                try:
+                    stdout_text = stdout.decode("cp1251", errors="replace")
+                except:
+                    stdout_text = stdout.decode("utf-8", errors="replace")
+            
+            # Пробуем декодировать stderr
+            stderr_text = None
+            for encoding in encodings_to_try:
+                try:
+                    stderr_text = stderr.decode(encoding, errors="strict")
+                    break
+                except (UnicodeDecodeError, LookupError):
+                    continue
+            
+            # Если ничего не сработало, используем replace для последней попытки
+            if stderr_text is None:
+                try:
+                    stderr_text = stderr.decode("cp1251", errors="replace")
+                except:
+                    stderr_text = stderr.decode("utf-8", errors="replace")
+
+            result = {
                 "returncode": process.returncode,
-                "stdout": stdout.decode("utf-8", errors="replace"),
-                "stderr": stderr.decode("utf-8", errors="replace"),
+                "stdout": stdout_text,
+                "stderr": stderr_text,
             }
+            
+            # Логируем для диагностики (только если есть ошибка)
+            if process.returncode != 0:
+                self.logger.debug(f"Command {command} failed with returncode {process.returncode}")
+                self.logger.debug(f"stdout length: {len(stdout_text)}, stderr length: {len(stderr_text)}")
+                if stderr_text:
+                    self.logger.debug(f"stderr (first 200 chars): {stderr_text[:200]}")
+                if stdout_text:
+                    self.logger.debug(f"stdout (first 200 chars): {stdout_text[:200]}")
+            
+            return result
         except asyncio.TimeoutError:
             raise SecurityError(f"Command timeout: {command}")
         except Exception as e:

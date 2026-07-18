@@ -1,0 +1,15 @@
+{
+  "id": "com.flamix.iptables",
+  "name": "iptables Firewall Plugin",
+  "version": "1.0.0",
+  "author": "Flamix Team",
+  "platforms": ["linux"],
+  "entry_point": "plugin.py",
+  "capabilities": ["manage_rules"],
+  "permissions": [
+    "run_shell_commands:iptables"
+  ],
+  "dependencies": {},
+  "api_version": "1.0",
+  "description": "Пример плагина для управления iptables (демонстрационный, без реального применения)."
+}

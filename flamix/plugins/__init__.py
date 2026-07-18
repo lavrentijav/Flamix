@@ -1,6 +1,5 @@
-"""Модули плагинов"""
+"""Модуль плагинов Flamix"""
 
-from .loader import PluginLoader, PluginLoadError
+from flamix.plugins.loader import PluginLoader, PluginLoadError
 
 __all__ = ["PluginLoader", "PluginLoadError"]
-

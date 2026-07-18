@@ -1,110 +1,55 @@
-"""Модели для manifest.json плагинов"""
+"""Модель манифеста плагина"""
 
-from typing import List, Optional, Dict, Any, Literal
-from pydantic import BaseModel, Field, validator
-import semantic_version
-
-from flamix.config import API_VERSION
+from typing import Dict, List, Optional, Any
+import json
 
 
-class FirewallVersionRange(BaseModel):
-    """Диапазон версий firewall"""
-    min: Optional[str] = None
-    max: Optional[str] = None
-    exact: List[str] = Field(default_factory=list)
-
-    @validator("min", "max", pre=True)
-    def validate_version(cls, v):
-        if v is None:
-            return None
-        try:
-            semantic_version.Version(v)
-            return v
-        except ValueError:
-            raise ValueError(f"Invalid semantic version: {v}")
-
-    @validator("exact", pre=True)
-    def validate_exact_versions(cls, v):
-        if not v:
-            return []
-        for version in v:
-            try:
-                semantic_version.Version(version)
-            except ValueError:
-                raise ValueError(f"Invalid semantic version in exact list: {version}")
-        return v
+class FirewallSupport:
+    """Поддержка файрвола в манифесте"""
+    
+    def __init__(self, **kwargs):
+        self.name = kwargs.get("name", "")
+        self.versions = kwargs.get("versions", {})
+        self.detect = kwargs.get("detect", {})
+        self.regex = kwargs.get("regex", [])
+        self.requires_root = kwargs.get("requires_root", False)
+        self.priority = kwargs.get("priority", 100)
 
 
-class FirewallDetect(BaseModel):
-    """Настройки детекта firewall"""
-    type: Literal["command", "script"]
-    value: str
-
-
-class FirewallSupport(BaseModel):
-    """Поддержка конкретного firewall"""
-    name: str
-    versions: FirewallVersionRange
-    detect: FirewallDetect
-    regex: List[str] = Field(..., min_items=1)
-    requires_root: bool = True
-    priority: int = Field(default=100, ge=0, le=1000)
-
-
-class PluginDependencies(BaseModel):
-    """Зависимости плагина"""
-    python: Optional[str] = None
-    packages: List[str] = Field(default_factory=list)
-
-
-class RuleField(BaseModel):
-    """Поле в схеме правила"""
-    name: str
-    type: Literal["text", "number", "select", "radio"]
-    label: str
-    required: bool = False
-    min: Optional[int] = None
-    max: Optional[int] = None
-    options: List[Dict[str, str]] = Field(default_factory=list)  # For select/radio
-    default: Optional[Any] = None
-
-
-class RuleSchema(BaseModel):
-    """Схема для динамических форм правил"""
-    fields: List[RuleField]
-
-
-class PluginManifest(BaseModel):
+class PluginManifest:
     """Манифест плагина"""
-    id: str = Field(..., pattern=r"^[a-z0-9._-]+$")
-    name: str
-    version: str
-    author: str
-    platforms: List[str]
-    entry_point: str
-    capabilities: List[str]
-    permissions: List[str]
-    dependencies: PluginDependencies = Field(default_factory=PluginDependencies)
-    signature: str = ""  # RSA-SHA256 подпись
-    checksum: str = ""  # SHA-256 хеш ZIP
-    api_version: str
-    firewall_support: List[FirewallSupport] = Field(..., min_items=1)
-    rule_schema: Optional[RuleSchema] = None
-
-    @validator("version", pre=True)
-    def validate_version(cls, v):
-        try:
-            semantic_version.Version(v)
-            return v
-        except ValueError:
-            raise ValueError(f"Invalid semantic version: {v}")
-
-    @validator("api_version", pre=True)
-    def validate_api_version(cls, v):
-        if v != API_VERSION:
-            raise ValueError(f"Unsupported API version: {v}, expected {API_VERSION}")
-        return v
-
-    class Config:
-        extra = "forbid"
-
+    
+    def __init__(self, **kwargs):
+        self.id = kwargs.get("id", "")
+        self.name = kwargs.get("name", "")
+        self.version = kwargs.get("version", "1.0.0")
+        self.author = kwargs.get("author", "")
+        self.platforms = kwargs.get("platforms", [])
+        self.entry_point = kwargs.get("entry_point", "plugin.py")
+        self.capabilities = kwargs.get("capabilities", [])
+        self.permissions = kwargs.get("permissions", [])
+        self.dependencies = kwargs.get("dependencies", {})
+        self.signature = kwargs.get("signature", "")
+        self.checksum = kwargs.get("checksum", "")
+        self.api_version = kwargs.get("api_version", "1.0")
+        self.firewall_support = kwargs.get("firewall_support", [])
+        self.rule_schema = kwargs.get("rule_schema")
+    
+    def dict(self) -> Dict[str, Any]:
+        """Преобразование в словарь"""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "version": self.version,
+            "author": self.author,
+            "platforms": self.platforms,
+            "entry_point": self.entry_point,
+            "capabilities": self.capabilities,
+            "permissions": self.permissions,
+            "dependencies": self.dependencies,
+            "signature": self.signature,
+            "checksum": self.checksum,
+            "api_version": self.api_version,
+            "firewall_support": self.firewall_support,
+            "rule_schema": self.rule_schema,
+        }

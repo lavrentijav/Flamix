@@ -1,6 +1,5 @@
-"""Модули безопасности"""
+"""Модуль безопасности Flamix"""
 
-from .permission_manager import PermissionManager
+from flamix.security.permission_manager import PermissionManager
 
 __all__ = ["PermissionManager"]
-

@@ -1,18 +1,5 @@
-"""Модели данных"""
+"""Модели данных Flamix"""
 
-from .manifest import (
-    PluginManifest,
-    FirewallSupport,
-    FirewallDetect,
-    FirewallVersionRange,
-    PluginDependencies,
-)
+from flamix.models.manifest import PluginManifest, FirewallSupport
 
-__all__ = [
-    "PluginManifest",
-    "FirewallSupport",
-    "FirewallDetect",
-    "FirewallVersionRange",
-    "PluginDependencies",
-]
-
+__all__ = ["PluginManifest", "FirewallSupport"]

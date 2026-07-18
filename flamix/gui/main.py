@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QSplitter,
 )
-from PySide6.QtCore import Qt, QTimer, QThread, Signal, QObject
+from PySide6.QtCore import Qt, QTimer, QThread, Signal, QObject, QEvent
 import logging
 
 from flamix.gui.rule_form import RuleFormWidget
@@ -472,11 +472,11 @@ class RulesWidget(QWidget):
                 self.form_container.layout().removeWidget(self.rule_form)
                 self.rule_form.deleteLater()
 
-            if self.rule_schema:
-                self.rule_form = RuleFormWidget(self.rule_schema)
-                self.rule_form.apply_btn.clicked.connect(self.apply_rule)
-                self.rule_form.cancel_btn.clicked.connect(self.rule_form.clear)
-                self.form_container.layout().insertWidget(1, self.rule_form)
+            # Создаем форму правил (если schema есть, используем её, иначе пустую)
+            self.rule_form = RuleFormWidget(self.rule_schema)
+            self.rule_form.apply_btn.clicked.connect(self.apply_rule)
+            self.rule_form.cancel_btn.clicked.connect(self.rule_form.clear)
+            self.form_container.layout().insertWidget(1, self.rule_form)
         except Exception as e:
             logger.error(f"Failed to load schema: {e}")
 
@@ -486,7 +486,7 @@ class RulesWidget(QWidget):
         pass
 
     def apply_rule(self):
-        """Применение правила"""
+        """Применение правила через CLI"""
         if not self.current_plugin_id or not self.rule_form:
             QMessageBox.warning(self, "Error", "No plugin selected or form not loaded")
             return
@@ -498,24 +498,44 @@ class RulesWidget(QWidget):
 
         def _apply():
             try:
-                import asyncio
+                import subprocess
+                import sys
+                from pathlib import Path
                 
-                if self.current_plugin_id not in self.plugin_manager.plugins:
-                    raise ValueError(f"Plugin {self.current_plugin_id} not found")
-
-                plugin_info = self.plugin_manager.plugins[self.current_plugin_id]
-                if not plugin_info["enabled"]:
-                    raise ValueError(f"Plugin {self.current_plugin_id} is not enabled")
-
-                instance = plugin_info["instance"]
-                # Вызываем async метод плагина через asyncio.run
-                try:
-                    loop = asyncio.get_event_loop()
-                except RuntimeError:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                loop.run_until_complete(instance.apply_rule(rule_data))
-
+                # Вызываем CLI через subprocess
+                cli_script = Path(__file__).parent.parent.parent / "run_cli.py"
+                
+                # Формируем команду для CLI
+                cmd = [
+                    sys.executable,
+                    str(cli_script),
+                    "add-rule",
+                    "--plugin", self.current_plugin_id,
+                    "--name", rule_data.get("name", "Rule"),
+                    "--direction", rule_data.get("direction", "in"),
+                    "--action", rule_data.get("action", "block")
+                ]
+                
+                if rule_data.get("protocol"):
+                    cmd.extend(["--protocol", rule_data["protocol"]])
+                if rule_data.get("port"):
+                    cmd.extend(["--local-port", str(rule_data["port"])])
+                if rule_data.get("ip"):
+                    cmd.extend(["--remote-ip", rule_data["ip"]])
+                if rule_data.get("profile"):
+                    cmd.extend(["--profile", rule_data["profile"]])
+                
+                # Выполняем команду
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                if result.returncode != 0:
+                    raise RuntimeError(f"CLI error: {result.stderr}")
+                
                 # Сохранение в БД
                 import json
                 rule_id = self.db.add_rule(self.current_plugin_id, json.dumps(rule_data))
@@ -706,26 +726,46 @@ class MainWindow(QMainWindow):
     """Главное окно приложения"""
 
     def __init__(self, flamix_app=None):
+        logger.info("[MainWindow] __init__ started")
         super().__init__()
+        logger.info("[MainWindow] super().__init__() completed")
+        
         try:
             # Получаем приложение напрямую (без IPC)
             if flamix_app is None:
+                logger.info("[MainWindow] flamix_app is None, getting app instance...")
                 from flamix.app import get_app
                 flamix_app = get_app()
+                logger.info("[MainWindow] App instance obtained")
+            else:
+                logger.info("[MainWindow] flamix_app provided as parameter")
             
+            logger.info("[MainWindow] Storing references...")
             self.flamix_app = flamix_app
+            logger.info("[MainWindow] Getting plugin_manager...")
             self.plugin_manager = flamix_app.get_plugin_manager()
+            logger.info("[MainWindow] Getting db...")
             self.db = flamix_app.get_db()
+            logger.info("[MainWindow] Getting traffic_monitor...")
             self.traffic_monitor = flamix_app.get_traffic_monitor()
+            logger.info("[MainWindow] All references stored")
             
-            logger.info("Initializing UI...")
+            logger.info("[MainWindow] Checking QApplication instance...")
             # Убеждаемся, что QApplication существует
             app = QApplication.instance()
             if app is None:
+                logger.error("[MainWindow] QApplication instance is None!")
                 raise RuntimeError("QApplication must be created before MainWindow")
+            logger.info(f"[MainWindow] QApplication instance found: {app}")
             
+            logger.info("[MainWindow] Calling init_ui()...")
             self.init_ui()
-            logger.info("UI initialized successfully")
+            logger.info("[MainWindow] init_ui() completed successfully")
+            
+            # Убеждаемся, что окно не закроется автоматически
+            logger.info("[MainWindow] Setting window attributes...")
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)  # Не удаляем окно при закрытии автоматически
+            logger.info("[MainWindow] Window attributes set")
         except Exception as e:
             logger.critical(f"Critical error in MainWindow.__init__: {e}", exc_info=True)
             import traceback
@@ -738,6 +778,28 @@ class MainWindow(QMainWindow):
             layout.addWidget(QLabel(str(e)))
             error_widget.setLayout(layout)
             self.setCentralWidget(error_widget)
+
+    def closeEvent(self, event):
+        """Обработка события закрытия окна"""
+        import traceback
+        logger.info("[MainWindow] closeEvent called!")
+        logger.info(f"[MainWindow] Event type: {event.type()}")
+        logger.info(f"[MainWindow] Event accepted: {event.isAccepted()}")
+        
+        # Логируем стек вызовов, чтобы понять, откуда пришло закрытие
+        logger.info("[MainWindow] Close event call stack:")
+        for line in traceback.format_stack():
+            logger.info(f"[MainWindow]   {line.strip()}")
+        
+        # Проверяем, кто вызывает закрытие
+        logger.info(f"[MainWindow] Window visible: {self.isVisible()}")
+        logger.info(f"[MainWindow] Window isMinimized: {self.isMinimized()}")
+        logger.info(f"[MainWindow] Window isMaximized: {self.isMaximized()}")
+        
+        logger.info("[MainWindow] Window is being closed - this is normal when user clicks X")
+        # Разрешаем закрытие окна - это нормальное поведение
+        event.accept()
+        logger.info("[MainWindow] closeEvent completed - window will close")
 
     def init_ui(self):
         try:

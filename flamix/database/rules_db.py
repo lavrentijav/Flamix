@@ -2,6 +2,7 @@
 
 import sqlite3
 import threading
+import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
@@ -23,13 +24,82 @@ class RulesDB:
 
     def _get_connection(self):
         """Получение соединения с БД (thread-safe)"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        # Ensure path is converted to string and resolve any relative paths
+        db_path_str = str(self.db_path.resolve())
+        
+        # Ensure parent directory exists and is writable
+        parent_dir = self.db_path.parent
+        if not parent_dir.exists():
+            logger.info(f"[RulesDB._get_connection] Creating parent directory: {parent_dir}")
+            parent_dir.mkdir(parents=True, exist_ok=True)
+        
+        if not os.access(str(parent_dir), os.W_OK):
+            raise PermissionError(f"Cannot write to database directory: {parent_dir}. Please check directory permissions.")
+        
+        # Check if database file exists and ensure it's writable
+        if self.db_path.exists():
+            import stat
+            try:
+                # Always ensure file is writable on Windows (remove read-only attribute)
+                if os.name == 'nt':  # Windows
+                    try:
+                        # Try using st_file_attributes if available (Python 3.8+)
+                        file_stat = os.stat(db_path_str)
+                        if hasattr(file_stat, 'st_file_attributes'):
+                            if file_stat.st_file_attributes & 0x1:  # FILE_ATTRIBUTE_READONLY
+                                logger.warning(f"[RulesDB._get_connection] Database file has read-only attribute, removing it: {db_path_str}")
+                                # Remove read-only attribute using win32 API-style chmod
+                                os.chmod(db_path_str, stat.S_IWRITE | stat.S_IREAD)
+                        else:
+                            # Fallback: use st_mode for older Python versions
+                            current_mode = file_stat.st_mode
+                            # Ensure write permission is set
+                            os.chmod(db_path_str, current_mode | stat.S_IWRITE)
+                    except Exception as e:
+                        logger.warning(f"[RulesDB._get_connection] Could not check/fix Windows file attributes: {e}")
+                else:  # Unix/Linux
+                    # Check if file is writable
+                    if not os.access(db_path_str, os.W_OK):
+                        logger.warning(f"[RulesDB._get_connection] Database file is not writable, fixing permissions: {db_path_str}")
+                        os.chmod(db_path_str, 0o666)
+            except Exception as e:
+                logger.warning(f"[RulesDB._get_connection] Error ensuring file is writable: {e}")
+                # Don't fail here - let SQLite try to open and report its own error
+        
+        # Открываем соединение с явным указанием режима записи
+        # Используем URI mode для более надежной работы с путями
+        try:
+            conn = sqlite3.connect(db_path_str, uri=False)
+            conn.row_factory = sqlite3.Row
+            # Проверяем, что база данных доступна для записи
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")  # Write-Ahead Logging для лучшей производительности
+            except sqlite3.OperationalError:
+                # Если WAL не поддерживается, продолжаем с обычным режимом
+                pass
+            return conn
+        except sqlite3.OperationalError as e:
+            if "readonly" in str(e).lower() or "read-only" in str(e).lower():
+                error_msg = (
+                    f"Cannot open database for writing: {db_path_str}\n"
+                    f"Error: {e}\n"
+                    f"Please check:\n"
+                    f"1. File permissions (file should be writable)\n"
+                    f"2. Directory permissions (directory should be writable)\n"
+                    f"3. Disk space availability\n"
+                    f"4. File is not locked by another process"
+                )
+                logger.error(f"[RulesDB._get_connection] {error_msg}")
+                raise PermissionError(error_msg) from e
+            raise
 
     def initialize(self):
         """Инициализация схемы БД"""
+        logger.info("[RulesDB.initialize] Starting database initialization...")
+        logger.info(f"[RulesDB.initialize] Database path: {self.db_path}")
         with self._lock:
+            logger.info("[RulesDB.initialize] Lock acquired")
+            logger.info("[RulesDB.initialize] Opening database connection...")
             with self._get_connection() as db:
                 # Таблица плагинов
                 db.execute("""
@@ -112,13 +182,27 @@ class RulesDB:
                     ON network_connections(process_name)
                 """)
 
+                logger.info("[RulesDB.initialize] Committing database changes...")
                 db.commit()
-                logger.info(f"Database initialized at {self.db_path}")
+                logger.info("[RulesDB.initialize] Database commit successful")
+                logger.info(f"[RulesDB.initialize] Database initialized at {self.db_path}")
             
-            # Очистка старых данных (старше 30 дней)
+            logger.info("[RulesDB.initialize] Database connection closed (exiting inner with block)")
+            logger.info("[RulesDB.initialize] Lock released (exiting with self._lock block)")
+        
+        # Очистка старых данных (старше 30 дней) - вызываем ВНЕ блока с блокировкой
+        # чтобы избежать deadlock (так как _cleanup_old_data тоже использует self._lock)
+        logger.info("[RulesDB.initialize] Calling _cleanup_old_data() (outside lock)...")
+        try:
             self._cleanup_old_data()
-            
-            self._initialized = True
+            logger.info("[RulesDB.initialize] _cleanup_old_data() completed")
+        except Exception as e:
+            logger.warning(f"[RulesDB.initialize] Error in _cleanup_old_data(): {e}. Continuing initialization...")
+            # Не прерываем инициализацию из-за ошибки cleanup - это не критично
+        
+        logger.info("[RulesDB.initialize] Setting _initialized = True...")
+        self._initialized = True
+        logger.info("[RulesDB.initialize] Database initialization completed successfully")
 
     def add_plugin(self, plugin_id: str, permissions: List[str]):
         """Добавление плагина в БД"""
@@ -143,6 +227,47 @@ class RulesDB:
                 )
                 db.commit()
                 return cursor.lastrowid
+    
+    def delete_rule(self, rule_id: int) -> bool:
+        """Удаление правила по ID"""
+        if not self._initialized:
+            logger.warning("Database not initialized yet, skipping delete_rule")
+            return False
+        with self._lock:
+            with self._get_connection() as db:
+                cursor = db.execute(
+                    "DELETE FROM rules WHERE id = ?",
+                    (rule_id,)
+                )
+                db.commit()
+                return cursor.rowcount > 0
+    
+    def delete_rules_by_ip(self, plugin_id: str, ip: str) -> int:
+        """Удаление всех правил для указанного IP адреса"""
+        if not self._initialized:
+            logger.warning("Database not initialized yet, skipping delete_rules_by_ip")
+            return 0
+        deleted_count = 0
+        with self._lock:
+            with self._get_connection() as db:
+                rules = db.execute(
+                    "SELECT id, content FROM rules WHERE plugin_id = ?",
+                    (plugin_id,)
+                ).fetchall()
+                
+                for rule in rules:
+                    try:
+                        import json
+                        content = json.loads(rule[1])
+                        rule_ip = content.get("remote_ip") or content.get("ip")
+                        if rule_ip == ip:
+                            db.execute("DELETE FROM rules WHERE id = ?", (rule[0],))
+                            deleted_count += 1
+                    except Exception as e:
+                        logger.warning(f"Ошибка при проверке правила {rule[0]}: {e}")
+                
+                db.commit()
+        return deleted_count
 
     def log_audit(
         self,
@@ -352,21 +477,39 @@ class RulesDB:
 
     def _cleanup_old_data(self):
         """Очистка данных старше 30 дней"""
+        logger.info("[RulesDB._cleanup_old_data] Starting cleanup of old data...")
         cutoff_date = datetime.now() - timedelta(days=30)
+        logger.info(f"[RulesDB._cleanup_old_data] Cutoff date: {cutoff_date}")
         
-        with self._lock:
-            with self._get_connection() as db:
-                # Удаление старых записей статистики трафика
-                db.execute(
-                    "DELETE FROM traffic_stats WHERE timestamp < ?",
-                    (cutoff_date.isoformat(),)
-                )
-                
-                # Удаление старых записей соединений
-                db.execute(
-                    "DELETE FROM network_connections WHERE timestamp < ?",
-                    (cutoff_date.isoformat(),)
-                )
-                
-                db.commit()
-                logger.info(f"Cleaned up data older than 30 days")
+        try:
+            with self._lock:
+                with self._get_connection() as db:
+                    # Удаление старых записей статистики трафика
+                    db.execute(
+                        "DELETE FROM traffic_stats WHERE timestamp < ?",
+                        (cutoff_date.isoformat(),)
+                    )
+                    
+                    # Удаление старых записей соединений
+                    db.execute(
+                        "DELETE FROM network_connections WHERE timestamp < ?",
+                        (cutoff_date.isoformat(),)
+                    )
+                    
+                    logger.info("[RulesDB._cleanup_old_data] Committing cleanup changes...")
+                    db.commit()
+                    logger.info("[RulesDB._cleanup_old_data] Cleanup commit successful")
+                    logger.info(f"[RulesDB._cleanup_old_data] Cleaned up data older than 30 days")
+                logger.info("[RulesDB._cleanup_old_data] Database connection closed (exiting with block)")
+        except sqlite3.OperationalError as e:
+            if "readonly" in str(e).lower() or "read-only" in str(e).lower():
+                # Database is read-only - log warning and skip cleanup (not critical)
+                logger.warning(f"[RulesDB._cleanup_old_data] Database is read-only, skipping cleanup: {e}")
+                logger.warning(f"[RulesDB._cleanup_old_data] This is not critical - application will continue normally")
+                # Don't raise - cleanup is not critical for application operation
+                return
+            else:
+                # Re-raise if it's a different operational error
+                raise
+        logger.info("[RulesDB._cleanup_old_data] Lock released (exiting with block)")
+        logger.info("[RulesDB._cleanup_old_data] Cleanup completed successfully")
